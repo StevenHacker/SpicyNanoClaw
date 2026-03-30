@@ -7,6 +7,8 @@ from pathlib import Path
 
 from app.config import DATA_ROOT, load_settings
 from app.memory.embedder import embed_texts
+from app.providers.kimi_provider import build_kimi_provider
+from app.providers.qwen_provider import build_qwen_provider
 from app.tools.memory_tool import memory_ingest, memory_search
 from app.tools.ocr_tool import parse_document
 from app.tests.generate_samples import main as ensure_samples
@@ -18,6 +20,29 @@ def provider_status() -> dict[str, str]:
         "kimi": "configured" if settings.kimi.api_base and settings.kimi.api_key else "missing_credentials",
         "qwen": "configured" if settings.qwen.api_base and settings.qwen.api_key else "missing_credentials",
     }
+
+
+def provider_health() -> dict[str, object]:
+    settings = load_settings()
+    checks: dict[str, object] = {}
+    providers = {
+        "kimi": (settings.kimi, build_kimi_provider),
+        "qwen": (settings.qwen, build_qwen_provider),
+    }
+    for name, (config, builder) in providers.items():
+        if not config.api_base or not config.api_key:
+            checks[name] = {"status": "missing_credentials"}
+            continue
+        try:
+            response = builder().ask("Reply with exactly: pong")
+            checks[name] = {
+                "status": "ok",
+                "latency_ms": response.get("latency_ms"),
+                "model": response.get("provider", {}).get("model"),
+            }
+        except Exception as exc:
+            checks[name] = {"status": "error", "error": str(exc)}
+    return checks
 
 
 def gateway_startup_test() -> dict[str, str]:
@@ -54,6 +79,7 @@ def main() -> int:
     report = {
         "imports": "ok",
         "providers": provider_status(),
+        "provider_health": provider_health(),
         "embedding_test": embed_texts(["hello local stack"])[0][:8],
         "memory_ingest": memory_ingest(str(text_path), {"suite": "selfcheck"}),
         "memory_search": memory_search("vector memory sentence", top_k=3),
