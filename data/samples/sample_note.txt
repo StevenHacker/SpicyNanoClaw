@@ -1,0 +1,2 @@
+Codex local stack sample note.
+The vector memory should be able to find this sentence.
