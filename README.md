@@ -1,65 +1,144 @@
-# codex-localstack
+# SpicyNanoClaw
 
-Windows-first, low-maintenance local AI tool stack for Codex. The system exposes one MCP gateway that Codex can auto-launch on demand, with no always-on databases, OCR daemons, containers, or model workers.
+SpicyNanoClaw is OpenClaw with a better memory for writing.
 
-## What this stack does
+It is a hot-pluggable `contextEngine` plugin that helps long sessions keep their brief, preserve active constraints, carry forward the right plans, fold back helper-worker results, and trim planning sludge before it takes over the thread.
 
-- `ask_kimi(prompt, attachments?, mode?)`
-- `ask_qwen(prompt, attachments?, mode?)`
-- `ocr_parse(input_path, output_format?, force_fallback?)`
-- `memory_ingest(source_path_or_text, metadata?)`
-- `memory_search(query, top_k?, filters?)`
+If you already like OpenClaw but want a version that holds shape better across many turns, this is the one to try.
 
-## Architecture
+## 30-Second Start
 
-- Gateway: Python MCP stdio server, auto-launched by Codex
-- Cloud providers: configurable OpenAI-compatible HTTP endpoints for Kimi and Qwen
-- OCR: lazy-loaded local pipeline using PyMuPDF + RapidOCR, with PDF/image support and table extraction when possible
-- Memory: local embeddings and reranking via `fastembed`, stored in embedded LanceDB
-- Persistence: everything lives under `data/`
+Host baseline:
 
-## Reboot behavior
+- `OpenClaw >= 2026.4.1`
 
-- Auto-starts: nothing except the gateway when Codex first needs the MCP server
-- Lazy-loads: OCR runtime, embedding model, reranker model, and LanceDB connection
-- Persists: `data/lancedb/`, `data/cache/`, `data/logs/`, sample assets, and config files
+If you downloaded or cloned this repo, the shortest try-today install is:
 
-After reboot the daily pattern is one line: open Codex, then use the tools normally; the gateway auto-launches and local OCR/memory cold-start only on first use.
+```bash
+openclaw plugins install ./data/releases/snc/openclaw-snc-0.1.0.tgz
+```
 
-## Setup
+Then enable SNC:
 
-1. Copy `.env.example` to `.env`.
-2. Fill in:
-   - `KIMI_API_BASE`
-   - `KIMI_API_KEY`
-   - `QWEN_API_BASE`
-   - `QWEN_API_KEY`
-3. Run `.\scripts\bootstrap.ps1`
-4. Run `.\scripts\selfcheck.ps1`
+```json5
+{
+  plugins: {
+    slots: {
+      contextEngine: "snc",
+    },
+    entries: {
+      snc: {
+        enabled: true,
+        config: {
+          stateDir: "./.snc/state",
+        },
+      },
+    },
+  },
+}
+```
 
-## Daily use
+That is enough to boot the plugin and start getting per-session continuity.
 
-- Fast sanity check: `.\scripts\smoke_test.ps1`
-- Manual gateway debug run: `.\scripts\start_gateway.ps1`
+## If You Want The Good Writing Path
 
-## Recovery
+Once the basic install works, add your writing artifacts:
 
-- Rebuild env and validate imports: `.\scripts\bootstrap.ps1`
-- Deep diagnostics: `.\scripts\selfcheck.ps1`
-- Backup persistent data: `.\scripts\backup_data.ps1`
-- Restore persistent data: `.\scripts\restore_data.ps1 -ArchivePath <zip>`
+- `briefFile`
+- `ledgerFile`
+- `packetDir`
 
-If OCR fails:
-- `.\scripts\selfcheck.ps1` will show whether PyMuPDF or RapidOCR failed.
-- The gateway keeps the same tool contract; the fallback path uses direct PDF text extraction where OCR is unavailable.
+Minimal richer config:
 
-If memory search fails:
-- `.\scripts\selfcheck.ps1` verifies LanceDB read/write plus embedding generation.
-- Delete only the affected data under `data/lancedb/` if you want a clean rebuild, or restore from backup.
+```json5
+{
+  plugins: {
+    slots: {
+      contextEngine: "snc",
+    },
+    entries: {
+      snc: {
+        enabled: true,
+        config: {
+          briefFile: "./docs/snc/brief.md",
+          ledgerFile: "./docs/snc/ledger.md",
+          packetDir: "./docs/snc/packets",
+          stateDir: "./.snc/state",
+          hooks: {
+            enabled: true,
+            targets: [
+              "before_message_write",
+              "tool_result_persist",
+              "session_end",
+              "subagent_spawned",
+              "subagent_ended"
+            ]
+          }
+        }
+      }
+    }
+  }
+}
+```
 
-## Notes on implementation choices
+## What Milestone 1 Already Gives You
 
-- OCR stack chosen: PyMuPDF + RapidOCR ONNX runtime
-- Embedding stack chosen: `fastembed` with `BAAI/bge-small-zh-v1.5` on this Windows machine
-- Reranker chosen: `fastembed` cross-encoder with `BAAI/bge-reranker-base`
-- Vector store chosen: embedded LanceDB
+- writing-oriented context assembly through the OpenClaw `contextEngine` slot
+- per-session state for directives, plans, focus, constraints, and continuity notes
+- plugin-owned durable-memory harvest and bounded recall projection
+- bounded transcript shaping for planning and meta chatter
+- bounded tool-result preview replacement
+- bounded worker-result fold-back and worker lifecycle bookkeeping
+- continuity-aware compaction guidance while keeping compaction ownership in OpenClaw
+
+## Why OpenClaw Users Usually Like It Fast
+
+SNC does not ask you to replace your host.
+
+It installs like a normal plugin, activates through one slot value, and can be rolled back the same way. That means you can try a writing-specialized continuity layer without committing to a forked runtime.
+
+## Other Install Paths
+
+If you are already inside an OpenClaw workspace and want a live local link:
+
+```bash
+openclaw plugins install -l ./extensions/snc
+```
+
+If and when the package is published to a registry, the target one-liner is:
+
+```bash
+openclaw plugins install openclaw-snc
+```
+
+## What Milestone 1 Does Not Pretend To Be
+
+- not a host memory-slot takeover
+- not a public MCP surface for SNC helper tools yet
+- not a general worker scheduler
+- not persistent worker-session orchestration
+- not a hard fork of OpenClaw internals
+
+This is a bounded first release with a clear writing focus.
+
+## Validation
+
+The current milestone gate is:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/validate_snc_milestone1.ps1
+```
+
+Current release-candidate status:
+
+- plugin test surface: `59/59`
+- package dry-run: passed
+- workspace typecheck: passed
+- built package: `data/releases/snc/openclaw-snc-0.1.0.tgz`
+
+## Repo Pointers
+
+If you are here as an OpenClaw user, these are the two useful paths:
+
+- installable package: [`data/releases/snc/openclaw-snc-0.1.0.tgz`](./data/releases/snc/openclaw-snc-0.1.0.tgz)
+- plugin source: [`data/working/openclaw-v2026.4.1-snc-v1/extensions/snc`](./data/working/openclaw-v2026.4.1-snc-v1/extensions/snc)

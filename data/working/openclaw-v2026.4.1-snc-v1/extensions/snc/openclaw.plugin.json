@@ -1,0 +1,104 @@
+{
+  "id": "snc",
+  "name": "SpicyNanoClaw",
+  "description": "Writing-oriented context engine for OpenClaw.",
+  "kind": "context-engine",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "briefFile": {
+        "type": "string",
+        "minLength": 1
+      },
+      "ledgerFile": {
+        "type": "string",
+        "minLength": 1
+      },
+      "packetFiles": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "packetDir": {
+        "type": "string",
+        "minLength": 1
+      },
+      "stateDir": {
+        "type": "string",
+        "minLength": 1
+      },
+      "hooks": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "targets": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "before_message_write",
+                "tool_result_persist",
+                "session_end",
+                "subagent_spawned",
+                "subagent_ended"
+              ]
+            }
+          },
+          "maxRewritesPerSession": {
+            "type": "number",
+            "minimum": 1
+          },
+          "maxReplacementBytes": {
+            "type": "number",
+            "minimum": 160
+          },
+          "maxToolResultBytes": {
+            "type": "number",
+            "minimum": 256
+          }
+        }
+      },
+      "maxSectionBytes": {
+        "type": "number",
+        "minimum": 512
+      }
+    }
+  },
+  "uiHints": {
+    "briefFile": {
+      "label": "Brief File",
+      "help": "Optional project brief or writing charter file injected into the SNC system prompt."
+    },
+    "ledgerFile": {
+      "label": "Ledger File",
+      "help": "Optional story ledger or continuity ledger file injected on each turn."
+    },
+    "packetFiles": {
+      "label": "Packet Files",
+      "help": "Ordered list of extra context packet files to inject after the brief and ledger."
+    },
+    "packetDir": {
+      "label": "Packet Directory",
+      "help": "Optional directory of .md, .txt, or .json files loaded alphabetically into the SNC packet."
+    },
+    "stateDir": {
+      "label": "State Directory",
+      "help": "Optional directory where SNC stores per-session state snapshots for reuse across turns."
+    },
+    "hooks": {
+      "label": "Hook Scaffold",
+      "help": "Optional disabled-by-default SNC shaping and worker-lifecycle hook layer. Use this for bounded transcript shaping, tool-result previewing, and worker bookkeeping."
+    },
+    "maxSectionBytes": {
+      "label": "Max Section Bytes",
+      "help": "Per-file byte cap before SNC truncates injected content.",
+      "advanced": true
+    }
+  }
+}
