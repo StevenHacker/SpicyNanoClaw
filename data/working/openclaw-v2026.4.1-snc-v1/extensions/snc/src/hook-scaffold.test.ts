@@ -39,6 +39,13 @@ function createConfig(overrides: Partial<SncResolvedConfig> = {}): SncResolvedCo
     packetFiles: [],
     packetDir: undefined,
     stateDir: undefined,
+    specializationMode: "auto",
+    durableMemory: {
+      maxCatalogEntries: 64,
+      staleEntryDays: 30,
+      projectionLimit: 3,
+      projectionMinimumScore: 3,
+    },
     maxSectionBytes: 24_576,
     ...overrides,
     hooks,
@@ -333,7 +340,7 @@ describe("SNC hook scaffold", () => {
     expect(second).toBeUndefined();
   });
 
-  it("shapes oversized tool results and freezes the first decision for a tool call", () => {
+  it("shapes oversized tool results and freezes the first decision for a tool call", async () => {
     const { registerHook, registered } = createRegisterHookRecorder();
     installSncHookScaffold(
       { registerHook },
@@ -349,7 +356,7 @@ describe("SNC hook scaffold", () => {
     );
 
     const hook = getRegisteredHook(registered, "tool_result_persist");
-    const first = hook.handler(
+    const first = (await hook.handler(
       {
         message: createToolResultMessage("alpha ".repeat(40), {
           details: {
@@ -364,9 +371,9 @@ describe("SNC hook scaffold", () => {
         toolCallId: "call_42",
         toolName: "read_file",
       },
-    ) as { message?: AgentMessage } | undefined;
+    )) as { message?: AgentMessage } | undefined;
 
-    const second = hook.handler(
+    const second = (await hook.handler(
       {
         message: createToolResultMessage("gamma ".repeat(60), {
           toolCallId: "call_42",
@@ -379,11 +386,303 @@ describe("SNC hook scaffold", () => {
         toolCallId: "call_42",
         toolName: "read_file",
       },
-    ) as { message?: AgentMessage } | undefined;
+    )) as { message?: AgentMessage } | undefined;
 
     expect(extractText(first?.message)).toContain("SNC stored tool result preview:");
     expect(extractText(second?.message)).toEqual(extractText(first?.message));
     expect("details" in ((first?.message ?? {}) as Record<string, unknown>)).toBe(false);
+  });
+
+  it("folds accepted sessions_spawn tool results into persisted SNC worker state", async () => {
+    const root = createTempDir();
+    const stateDir = path.join(root, ".snc-state");
+    const contract = buildSncWorkerJobContract({
+      jobId: "hook-worker-launch-01",
+      title: "Check continuity anchors",
+      kind: "continuity-check",
+      objective: "Verify continuity anchors for the chapter.",
+    });
+    const prepared = prepareSncWorkerLaunch(
+      createSncWorkerControllerState({
+        controllerSessionKey: "agent:main:story",
+      }),
+      {
+        contract,
+        workerId: "hook-worker-launch-01",
+        controllerSessionKey: "agent:main:story",
+        now: "2026-04-04T10:02:00.000Z",
+      },
+    );
+    await persistSncWorkerState({
+      stateDir,
+      sessionId: "session-hook-launch-1",
+      sessionKey: "agent:main:story",
+      controllerState: prepared.state,
+      updatedAt: "2026-04-04T10:02:00.000Z",
+    });
+
+    const { registerHook, registered } = createRegisterHookRecorder();
+    installSncHookScaffold(
+      { registerHook },
+      createConfig({
+        stateDir,
+        hooks: {
+          enabled: true,
+          targets: ["tool_result_persist"],
+          maxRewritesPerSession: 6,
+          maxReplacementBytes: 220,
+          maxToolResultBytes: 2048,
+        },
+      }),
+    );
+
+    const hook = getRegisteredHook(registered, "tool_result_persist");
+    await hook.handler(
+      {
+        message: createToolResultMessage(
+          JSON.stringify(
+            {
+              status: "accepted",
+              childSessionKey: "agent:main:subagent:child-hook-launch-1",
+              runId: "run-hook-launch-1",
+            },
+            null,
+            2,
+          ),
+          {
+            details: {
+              status: "accepted",
+              childSessionKey: "agent:main:subagent:child-hook-launch-1",
+              runId: "run-hook-launch-1",
+            },
+            toolName: "sessions_spawn",
+            toolCallId: "call_spawn_accept_1",
+          },
+        ),
+        toolName: "sessions_spawn",
+        toolCallId: "call_spawn_accept_1",
+      },
+      {
+        sessionKey: "agent:main:story",
+        toolName: "sessions_spawn",
+        toolCallId: "call_spawn_accept_1",
+      },
+    );
+
+    const state = await loadSncWorkerState({
+      stateDir,
+      sessionId: "session-hook-launch-1",
+      sessionKey: "agent:main:story",
+    });
+    const record = state?.controllerState.records.find(
+      (entry) => entry.workerId === "hook-worker-launch-01",
+    );
+
+    expect(record?.status).toBe("spawned");
+    expect(record?.childSessionKey).toBe("agent:main:subagent:child-hook-launch-1");
+    expect(record?.runId).toBe("run-hook-launch-1");
+  });
+
+  it("folds sessions_send follow-up visibility into persisted SNC worker state", async () => {
+    const root = createTempDir();
+    const stateDir = path.join(root, ".snc-state");
+    const contract = buildSncWorkerJobContract({
+      jobId: "hook-worker-followup-01",
+      title: "Check callback continuity",
+      kind: "analysis",
+      objective: "Follow up on an already-running helper worker.",
+    });
+    const prepared = prepareSncWorkerLaunch(
+      createSncWorkerControllerState({
+        controllerSessionKey: "agent:main:story",
+      }),
+      {
+        contract,
+        workerId: "hook-worker-followup-01",
+        controllerSessionKey: "agent:main:story",
+        now: "2026-04-04T10:02:00.000Z",
+      },
+    );
+    const spawned = applySncWorkerLaunchResult(prepared.state, {
+      workerId: "hook-worker-followup-01",
+      result: {
+        status: "accepted",
+        childSessionKey: "agent:main:subagent:child-hook-followup-1",
+        runId: "run-hook-followup-1",
+      },
+      now: "2026-04-04T10:02:01.000Z",
+    });
+
+    await persistSncWorkerState({
+      stateDir,
+      sessionId: "session-hook-followup-1",
+      sessionKey: "agent:main:story",
+      controllerState: spawned,
+      updatedAt: "2026-04-04T10:02:01.000Z",
+    });
+
+    const { registerHook, registered } = createRegisterHookRecorder();
+    installSncHookScaffold(
+      { registerHook },
+      createConfig({
+        stateDir,
+        hooks: {
+          enabled: true,
+          targets: ["tool_result_persist"],
+          maxRewritesPerSession: 6,
+          maxReplacementBytes: 220,
+          maxToolResultBytes: 2048,
+        },
+      }),
+    );
+
+    const hook = getRegisteredHook(registered, "tool_result_persist");
+    await hook.handler(
+      {
+        message: createToolResultMessage(
+          JSON.stringify({
+            status: "ok",
+            sessionKey: "agent:main:subagent:child-hook-followup-1",
+            reply:
+              "The worker found one callback mismatch and proposed a tighter paragraph bridge.",
+            delivery: {
+              status: "pending",
+              mode: "announce",
+            },
+          }),
+          {
+            details: {
+              status: "ok",
+              sessionKey: "agent:main:subagent:child-hook-followup-1",
+              reply:
+                "The worker found one callback mismatch and proposed a tighter paragraph bridge.",
+              delivery: {
+                status: "pending",
+                mode: "announce",
+              },
+            },
+            toolName: "sessions_send",
+            toolCallId: "call_send_ok_1",
+          },
+        ),
+        toolName: "sessions_send",
+        toolCallId: "call_send_ok_1",
+      },
+      {
+        sessionKey: "agent:main:story",
+        toolName: "sessions_send",
+        toolCallId: "call_send_ok_1",
+      },
+    );
+
+    const state = await loadSncWorkerState({
+      stateDir,
+      sessionId: "session-hook-followup-1",
+      sessionKey: "agent:main:story",
+    });
+    const record = state?.controllerState.records.find(
+      (entry) => entry.workerId === "hook-worker-followup-01",
+    );
+
+    expect(record?.status).toBe("spawned");
+    expect(record?.followUp?.status).toBe("ok");
+    expect(record?.followUp?.summary).toContain("Reply observed from worker");
+    expect(record?.followUp?.replySnippet).toContain("callback mismatch");
+    expect(record?.followUp?.deliveryStatus).toBe("pending");
+    expect(record?.followUp?.deliveryMode).toBe("announce");
+  });
+
+  it("records inspect-first failure state when sessions_spawn returns an ambiguous launch error", async () => {
+    const root = createTempDir();
+    const stateDir = path.join(root, ".snc-state");
+    const contract = buildSncWorkerJobContract({
+      jobId: "hook-worker-launch-02",
+      title: "Review chapter pressure",
+      kind: "analysis",
+      objective: "Inspect where the chapter loses pressure.",
+    });
+    const prepared = prepareSncWorkerLaunch(
+      createSncWorkerControllerState({
+        controllerSessionKey: "agent:main:story",
+      }),
+      {
+        contract,
+        workerId: "hook-worker-launch-02",
+        controllerSessionKey: "agent:main:story",
+        now: "2026-04-04T10:03:00.000Z",
+      },
+    );
+    await persistSncWorkerState({
+      stateDir,
+      sessionId: "session-hook-launch-2",
+      sessionKey: "agent:main:story",
+      controllerState: prepared.state,
+      updatedAt: "2026-04-04T10:03:00.000Z",
+    });
+
+    const { registerHook, registered } = createRegisterHookRecorder();
+    installSncHookScaffold(
+      { registerHook },
+      createConfig({
+        stateDir,
+        hooks: {
+          enabled: true,
+          targets: ["tool_result_persist"],
+          maxRewritesPerSession: 6,
+          maxReplacementBytes: 220,
+          maxToolResultBytes: 2048,
+        },
+      }),
+    );
+
+    const hook = getRegisteredHook(registered, "tool_result_persist");
+    await hook.handler(
+      {
+        message: createToolResultMessage(
+          JSON.stringify(
+            {
+              status: "error",
+              childSessionKey: "agent:main:subagent:child-hook-launch-2",
+              runId: "run-hook-launch-2",
+              error: "Failed to register ACP run: cleanup was attempted, but the already-started ACP run may still finish in the background.",
+            },
+            null,
+            2,
+          ),
+          {
+            details: {
+              status: "error",
+              childSessionKey: "agent:main:subagent:child-hook-launch-2",
+              runId: "run-hook-launch-2",
+              error: "Failed to register ACP run: cleanup was attempted, but the already-started ACP run may still finish in the background.",
+            },
+            toolName: "sessions_spawn",
+            toolCallId: "call_spawn_error_1",
+          },
+        ),
+        toolName: "sessions_spawn",
+        toolCallId: "call_spawn_error_1",
+      },
+      {
+        sessionKey: "agent:main:story",
+        toolName: "sessions_spawn",
+        toolCallId: "call_spawn_error_1",
+      },
+    );
+
+    const state = await loadSncWorkerState({
+      stateDir,
+      sessionId: "session-hook-launch-2",
+      sessionKey: "agent:main:story",
+    });
+    const record = state?.controllerState.records.find(
+      (entry) => entry.workerId === "hook-worker-launch-02",
+    );
+
+    expect(record?.status).toBe("failed");
+    expect(record?.result?.summary).toContain("inspect the existing child session before retrying");
+    expect(record?.result?.evidence).toContain("launch class: runtime-ambiguous");
+    expect(state?.recentFoldBacks[0]?.summary).toContain("inspect the existing child session before retrying");
   });
 
   it("clears per-session shaping state on session_end", () => {

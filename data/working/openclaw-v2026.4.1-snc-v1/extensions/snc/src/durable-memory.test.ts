@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { SncSessionState } from "./session-state.js";
 import {
+  buildSncDurableMemoryDiagnosticsSection,
   buildSncDurableMemorySection,
   harvestSncDurableMemoryEntries,
   loadSncDurableMemoryCatalog,
@@ -259,5 +260,61 @@ describe("snc durable memory utility", () => {
     expect(section).toContain("Keep the noir tone");
     expect(section).toContain("[constraint]");
     expect(section).toContain("Keep first-person POV");
+  });
+
+  it("builds bounded durable-memory diagnostics when hygiene or projection limits need operator attention", () => {
+    const diagnostics = buildSncDurableMemoryDiagnosticsSection({
+      entries: [
+        {
+          version: 1,
+          id: "dm-old-weak",
+          category: "fact",
+          text: "Chapter 1 bridge note",
+          tags: ["fact"],
+          strength: "derived",
+          firstCapturedAt: "2026-01-01T00:00:00.000Z",
+          lastConfirmedAt: "2026-01-01T00:00:00.000Z",
+          confirmationCount: 1,
+          evidence: [{ sessionId: "session-old", source: "chapter-state" }],
+        },
+        {
+          version: 1,
+          id: "dm-directive",
+          category: "directive",
+          text: "Keep the noir tone",
+          tags: ["directive", "tone"],
+          strength: "explicit-user",
+          firstCapturedAt: "2026-04-04T00:00:00.000Z",
+          lastConfirmedAt: "2026-04-04T00:00:00.000Z",
+          confirmationCount: 1,
+          evidence: [{ sessionId: "session-1", source: "story-ledger" }],
+        },
+        {
+          version: 1,
+          id: "dm-constraint",
+          category: "constraint",
+          text: "Keep first-person POV",
+          tags: ["constraint", "pov"],
+          strength: "explicit-user",
+          firstCapturedAt: "2026-04-04T00:00:00.000Z",
+          lastConfirmedAt: "2026-04-04T00:00:00.000Z",
+          confirmationCount: 1,
+          evidence: [{ sessionId: "session-1", source: "chapter-state" }],
+        },
+      ],
+      currentText: "Please keep the noir tone and first-person POV.",
+      currentConstraints: ["Keep first-person POV"],
+      limit: 1,
+      minimumScore: 3,
+      now: "2026-04-04T00:00:00.000Z",
+      staleEntryDays: 30,
+      maxBytes: 700,
+    });
+
+    expect(diagnostics).toContain("Catalog: 3 entries; projected now 1/3 above score 3.");
+    expect(diagnostics).toContain("Mix: directive 1, constraint 1, fact 1.");
+    expect(diagnostics).toContain("Weak single-signal entries: 1;");
+    expect(diagnostics).toContain("Stale weak entries waiting for prune: 1;");
+    expect(diagnostics).toContain("Projection is saturated at limit 1;");
   });
 });

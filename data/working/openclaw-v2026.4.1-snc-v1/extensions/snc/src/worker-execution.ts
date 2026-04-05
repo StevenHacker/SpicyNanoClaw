@@ -8,6 +8,8 @@ import {
   type SncWorkerCompletionMode,
   type SncWorkerControllerState,
   type SncWorkerFollowUpMode,
+  type SncWorkerFollowUpObservation,
+  type SncWorkerFollowUpObservationStatus,
   type SncWorkerJobContract,
   type SncWorkerResult,
   type SncWorkerSpawnBrief,
@@ -20,6 +22,7 @@ const DEFAULT_SPAWN_SANDBOX = "inherit";
 const DEFAULT_YIELD_MESSAGE = "Yielding so SNC worker results can arrive as completion events.";
 const DEFAULT_RECENT_MINUTES = 15;
 const MAX_LABEL_CHARS = 96;
+const MAX_REPLY_SNIPPET_CHARS = 220;
 const INTERNAL_EVENT_HEADER = "[Internal task completion event]";
 const BEGIN_UNTRUSTED_CHILD_RESULT = "<<<BEGIN_UNTRUSTED_CHILD_RESULT>>>";
 const END_UNTRUSTED_CHILD_RESULT = "<<<END_UNTRUSTED_CHILD_RESULT>>>";
@@ -97,9 +100,30 @@ export type SncWorkerSpawnToolResult = {
   error?: unknown;
 };
 
+export type SncWorkerFollowUpToolResult = {
+  status?: unknown;
+  sessionKey?: unknown;
+  reply?: unknown;
+  delivery?: unknown;
+  error?: unknown;
+  runId?: unknown;
+};
+
+export type SncWorkerLaunchFailureClass =
+  | "validation"
+  | "host-refused"
+  | "runtime-clean"
+  | "runtime-ambiguous";
+
 export type SncApplyWorkerLaunchResultInput = {
   workerId: string;
   result: SncWorkerSpawnToolResult;
+  now?: string;
+};
+
+export type SncApplyWorkerFollowUpResultInput = {
+  workerId: string;
+  result: SncWorkerFollowUpToolResult;
   now?: string;
 };
 
@@ -137,6 +161,14 @@ function normalizeOptionalString(value: unknown): string | undefined {
 }
 
 function clampLabel(input: string, maxChars = MAX_LABEL_CHARS): string {
+  const normalized = normalizeText(input);
+  if (normalized.length <= maxChars) {
+    return normalized;
+  }
+  return `${normalized.slice(0, Math.max(1, maxChars - 3)).trimEnd()}...`;
+}
+
+function clampSnippet(input: string, maxChars = MAX_REPLY_SNIPPET_CHARS): string {
   const normalized = normalizeText(input);
   if (normalized.length <= maxChars) {
     return normalized;
@@ -193,6 +225,123 @@ function extractTextFromMessageContent(content: unknown): string {
     })
     .filter(Boolean)
     .join("\n");
+}
+
+function extractStructuredToolResultPayload(message: AgentMessage): Record<string, unknown> | null {
+  const details = (message as { details?: unknown }).details;
+  if (details && typeof details === "object" && !Array.isArray(details)) {
+    return details as Record<string, unknown>;
+  }
+
+  const text = extractTextFromMessageContent((message as { content?: unknown }).content).trim();
+  if (!text) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function inferValidationFailure(error?: string): boolean {
+  if (!error) {
+    return false;
+  }
+
+  return [
+    /does not support/i,
+    /only supported for runtime=/i,
+    /currently unsupported/i,
+    /invalid agentid/i,
+    /spawnmode=run/i,
+    /completionmode=one-shot/i,
+    /\bmode=session\b/i,
+    /\bthread=true\b/i,
+    /\bthinking\b/i,
+  ].some((pattern) => pattern.test(error));
+}
+
+function classifySncWorkerLaunchFailure(params: {
+  status?: string;
+  error?: string;
+  childSessionKey?: string;
+  runId?: string;
+}): SncWorkerLaunchFailureClass | null {
+  if (params.status === "forbidden") {
+    return "host-refused";
+  }
+  if (params.status !== "error" && params.status !== "accepted") {
+    return null;
+  }
+  if (params.childSessionKey || params.runId) {
+    return "runtime-ambiguous";
+  }
+  if (inferValidationFailure(params.error)) {
+    return "validation";
+  }
+  return "runtime-clean";
+}
+
+function normalizeFollowUpStatus(
+  value: unknown,
+): SncWorkerFollowUpObservationStatus | undefined {
+  return value === "accepted" || value === "ok" || value === "timeout" || value === "error"
+    ? value
+    : undefined;
+}
+
+function buildLaunchFailureSummary(params: {
+  title: string;
+  classification: SncWorkerLaunchFailureClass;
+  error?: string;
+}): string {
+  const suffix = params.error ? ` ${params.error}` : "";
+  switch (params.classification) {
+    case "validation":
+      return `${params.title}: launch request invalid; fix the helper brief or host arguments before retrying.${suffix}`;
+    case "host-refused":
+      return `${params.title}: host refused launch.${suffix}`;
+    case "runtime-ambiguous":
+      return `${params.title}: launch failed after worker identity was created; inspect the existing child session before retrying.${suffix}`;
+    case "runtime-clean":
+    default:
+      return `${params.title}: launch failed before worker identity was established.${suffix}`;
+  }
+}
+
+function buildLaunchFailureRecommendations(
+  classification: SncWorkerLaunchFailureClass,
+): string[] {
+  switch (classification) {
+    case "validation":
+      return ["Fix the helper brief or host-facing launch arguments before retrying."];
+    case "host-refused":
+      return ["Change host policy, sandbox, or target conditions before retrying."];
+    case "runtime-ambiguous":
+      return ["Inspect the existing child session before launching another helper."];
+    case "runtime-clean":
+    default:
+      return ["Inspect the host/runtime issue, then retry once the cause is fixed."];
+  }
+}
+
+function buildLaunchFailureNextSteps(classification: SncWorkerLaunchFailureClass): string[] {
+  switch (classification) {
+    case "validation":
+      return ["Adjust the generated worker launch request, then retry the helper once."];
+    case "host-refused":
+      return ["Decide whether the helper should be deferred or reissued under different host conditions."];
+    case "runtime-ambiguous":
+      return ["Use the existing child session or run identifiers to inspect state before retrying."];
+    case "runtime-clean":
+    default:
+      return ["Retry only after the runtime or infrastructure issue is understood."];
+  }
 }
 
 function parseCompletionBlock(block: string): SncParsedWorkerCompletionEvent | null {
@@ -305,10 +454,48 @@ export function prepareSncWorkerLaunch(
   };
 }
 
+export function parseSncWorkerSpawnToolResultFromMessage(
+  message: AgentMessage,
+): SncWorkerSpawnToolResult | null {
+  const payload = extractStructuredToolResultPayload(message);
+  if (!payload) {
+    return null;
+  }
+
+  return {
+    status: payload.status,
+    childSessionKey: payload.childSessionKey,
+    runId: payload.runId,
+    mode: payload.mode,
+    note: payload.note,
+    error: payload.error,
+  };
+}
+
+export function parseSncWorkerFollowUpToolResultFromMessage(
+  message: AgentMessage,
+): SncWorkerFollowUpToolResult | null {
+  const payload = extractStructuredToolResultPayload(message);
+  if (!payload) {
+    return null;
+  }
+
+  return {
+    status: payload.status,
+    sessionKey: payload.sessionKey,
+    reply: payload.reply,
+    delivery: payload.delivery,
+    error: payload.error,
+    runId: payload.runId,
+  };
+}
+
 export function applySncWorkerLaunchResult(
   state: SncWorkerControllerState,
   input: SncApplyWorkerLaunchResultInput,
 ): SncWorkerControllerState {
+  const record = state.records.find((entry) => entry.workerId === input.workerId);
+  const title = normalizeOptionalString(record?.contract.title) ?? `Worker ${input.workerId}`;
   const status = normalizeOptionalString(input.result.status);
   const childSessionKey = normalizeOptionalString(input.result.childSessionKey);
   const runId = normalizeOptionalString(input.result.runId);
@@ -323,15 +510,31 @@ export function applySncWorkerLaunchResult(
     });
   }
 
-  if (status === "forbidden" || status === "error") {
+  const classification = classifySncWorkerLaunchFailure({
+    status,
+    error,
+    childSessionKey,
+    runId,
+  });
+
+  if (classification) {
     return recordSncWorkerResult(state, {
       workerId: input.workerId,
       status: "failed",
-      summary: error ?? `Worker launch failed with status=${status}.`,
+      summary: buildLaunchFailureSummary({
+        title,
+        classification,
+        error,
+      }),
       findings: error ? [error] : [],
-      recommendations: ["Narrow the brief or adjust host-facing launch parameters before retrying."],
-      evidence: [runId ? `runId: ${runId}` : `launch status: ${status ?? "unknown"}`],
-      nextSteps: ["Decide whether this worker should be retried, deferred, or replaced."],
+      recommendations: buildLaunchFailureRecommendations(classification),
+      evidence: [
+        `launch class: ${classification}`,
+        `launch status: ${status ?? "unknown"}`,
+        ...(childSessionKey ? [`childSessionKey: ${childSessionKey}`] : []),
+        ...(runId ? [`runId: ${runId}`] : []),
+      ],
+      nextSteps: buildLaunchFailureNextSteps(classification),
       followUpMode: "none",
       ...(runId ? { runId } : {}),
       ...(childSessionKey ? { childSessionKey } : {}),
@@ -340,6 +543,91 @@ export function applySncWorkerLaunchResult(
   }
 
   return state;
+}
+
+function buildFollowUpSummary(params: {
+  status: SncWorkerFollowUpObservationStatus;
+  replyObserved: boolean;
+}): string {
+  if (params.status === "accepted") {
+    return "Follow-up accepted; reply has not been observed yet.";
+  }
+  if (params.status === "ok") {
+    return params.replyObserved
+      ? "Reply observed from worker."
+      : "Follow-up wait window completed with no fresh visible reply.";
+  }
+  if (params.status === "timeout") {
+    return "No reply was observed before timeout; inspect before retrying.";
+  }
+  return "Follow-up attempt failed; inspect current worker/session state.";
+}
+
+function buildFollowUpObservation(
+  result: SncWorkerFollowUpToolResult,
+  now: string,
+): SncWorkerFollowUpObservation | null {
+  const status = normalizeFollowUpStatus(result.status);
+  if (!status) {
+    return null;
+  }
+
+  const sessionKey = normalizeOptionalString(result.sessionKey);
+  const reply = normalizeOptionalString(result.reply);
+  const error = normalizeOptionalString(result.error);
+  const delivery =
+    result.delivery && typeof result.delivery === "object" && !Array.isArray(result.delivery)
+      ? (result.delivery as Record<string, unknown>)
+      : null;
+  const deliveryStatus = normalizeOptionalString(delivery?.status);
+  const deliveryMode = normalizeOptionalString(delivery?.mode);
+
+  return {
+    status,
+    observedAt: now,
+    summary: buildFollowUpSummary({
+      status,
+      replyObserved: Boolean(reply),
+    }),
+    replyObserved: Boolean(reply),
+    ...(reply ? { replySnippet: clampSnippet(reply) } : {}),
+    ...(sessionKey ? { sessionKey } : {}),
+    ...(deliveryStatus ? { deliveryStatus } : {}),
+    ...(deliveryMode ? { deliveryMode } : {}),
+    ...(error ? { error } : {}),
+  };
+}
+
+export function applySncWorkerFollowUpResult(
+  state: SncWorkerControllerState,
+  input: SncApplyWorkerFollowUpResultInput,
+): SncWorkerControllerState {
+  const record = state.records.find((entry) => entry.workerId === input.workerId);
+  if (!record) {
+    return state;
+  }
+
+  const now = input.now ?? new Date().toISOString();
+  const observation = buildFollowUpObservation(input.result, now);
+  if (!observation) {
+    return state;
+  }
+
+  return {
+    ...state,
+    records: state.records.map((entry) =>
+      entry.workerId === input.workerId
+        ? {
+            ...entry,
+            updatedAt: now,
+            ...(observation.sessionKey && !entry.childSessionKey
+              ? { childSessionKey: observation.sessionKey }
+              : {}),
+            followUp: observation,
+          }
+        : entry,
+    ),
+  };
 }
 
 export function buildSncWorkerYieldToolArgs(

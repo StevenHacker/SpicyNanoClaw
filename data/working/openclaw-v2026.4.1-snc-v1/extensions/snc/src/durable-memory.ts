@@ -10,6 +10,7 @@ const DEFAULT_PROJECTION_LIMIT = 3;
 const DEFAULT_PROJECTION_MIN_SCORE = 3;
 const DEFAULT_PROJECTION_MAX_BYTES = 900;
 const DEFAULT_STALE_ENTRY_DAYS = 30;
+const DEFAULT_DIAGNOSTICS_MAX_BYTES = 768;
 
 const CATEGORY_WEIGHTS: Record<SncDurableMemoryCategory, number> = {
   directive: 5,
@@ -101,6 +102,12 @@ export type SncDurableMemoryPersistInput = SncDurableMemoryStoreInput & {
   now?: string;
   maxCatalogEntries?: number;
   staleEntryDays?: number;
+};
+
+export type SncDurableMemoryDiagnosticsInput = SncDurableMemoryProjectionInput & {
+  now?: string;
+  staleEntryDays?: number;
+  maxBytes?: number;
 };
 
 function normalizeOptionalString(value: unknown): string | undefined {
@@ -550,6 +557,40 @@ function filterWeakStaleEntries(
   });
 }
 
+function countWeakStaleEntries(
+  entries: SncDurableMemoryEntry[],
+  now: string,
+  staleEntryDays: number,
+): number {
+  return entries.length - filterWeakStaleEntries(entries, now, staleEntryDays).length;
+}
+
+function buildCategoryMix(entries: SncDurableMemoryEntry[]): string {
+  const counts = new Map<SncDurableMemoryCategory, number>([
+    ["directive", 0],
+    ["constraint", 0],
+    ["continuity", 0],
+    ["fact", 0],
+  ]);
+
+  for (const entry of entries) {
+    counts.set(entry.category, (counts.get(entry.category) ?? 0) + 1);
+  }
+
+  return [...counts.entries()]
+    .filter(([, count]) => count > 0)
+    .map(([category, count]) => `${category} ${count}`)
+    .join(", ");
+}
+
+function countQualifiedEntries(
+  entries: SncDurableMemoryEntry[],
+  input: SncDurableMemoryProjectionInput,
+  minimumScore: number,
+): number {
+  return entries.filter((entry) => scoreEntry(entry, input) >= minimumScore).length;
+}
+
 export function createSncDurableMemoryCatalog(now = new Date().toISOString()): SncDurableMemoryCatalog {
   return {
     version: DURABLE_MEMORY_VERSION,
@@ -711,6 +752,63 @@ export function buildSncDurableMemorySection(
   }
 
   const maxBytes = clampCount(input.maxBytes, DEFAULT_PROJECTION_MAX_BYTES, 128);
+  return clampUtf8(lines.join("\n"), maxBytes);
+}
+
+export function buildSncDurableMemoryDiagnosticsSection(
+  input: SncDurableMemoryDiagnosticsInput,
+): string | undefined {
+  const entries = normalizeEntryList(input.entries);
+  if (entries.length === 0) {
+    return undefined;
+  }
+
+  const projectionLimit = clampCount(input.limit, DEFAULT_PROJECTION_LIMIT, 1);
+  const projectionMinimumScore = clampCount(input.minimumScore, DEFAULT_PROJECTION_MIN_SCORE, 0);
+  const now = input.now ?? new Date().toISOString();
+  const staleEntryDays = clampCount(input.staleEntryDays, DEFAULT_STALE_ENTRY_DAYS, 1);
+  const projected = projectSncDurableMemoryEntries({
+    ...input,
+    entries,
+    limit: projectionLimit,
+    minimumScore: projectionMinimumScore,
+  });
+  const qualifiedCount = countQualifiedEntries(entries, input, projectionMinimumScore);
+  const weakSingleSignalCount = entries.filter((entry) => isWeakSingleSignal(entry)).length;
+  const weakStaleCount = countWeakStaleEntries(entries, now, staleEntryDays);
+
+  const diagnostics: string[] = [];
+  if (weakSingleSignalCount > 0) {
+    diagnostics.push(
+      `Weak single-signal entries: ${weakSingleSignalCount}; entries that stay unconfirmed for ${staleEntryDays}d age out on later writes.`,
+    );
+  }
+  if (weakStaleCount > 0) {
+    diagnostics.push(
+      `Stale weak entries waiting for prune: ${weakStaleCount}; the next successful durable-memory write should remove them.`,
+    );
+  }
+  if (qualifiedCount === 0) {
+    diagnostics.push(
+      `No durable cue currently clears score ${projectionMinimumScore}; do not force stale memory into this turn.`,
+    );
+  } else if (qualifiedCount > projected.length) {
+    diagnostics.push(
+      `Projection is saturated at limit ${projectionLimit}; only raise it if continuity evidence is still starved after review.`,
+    );
+  }
+
+  if (diagnostics.length === 0) {
+    return undefined;
+  }
+
+  const lines = [
+    `Catalog: ${entries.length} entries; projected now ${projected.length}/${qualifiedCount} above score ${projectionMinimumScore}.`,
+    `Mix: ${buildCategoryMix(entries)}.`,
+    ...diagnostics,
+  ];
+
+  const maxBytes = clampCount(input.maxBytes, DEFAULT_DIAGNOSTICS_MAX_BYTES, 160);
   return clampUtf8(lines.join("\n"), maxBytes);
 }
 

@@ -18,6 +18,19 @@ export type SncWorkerCompletionMode = "one-shot" | "iterative";
 export type SncWorkerStatus = "queued" | "spawned" | "running" | "blocked" | "complete" | "failed" | "aborted";
 export type SncWorkerResultStatus = "complete" | "failed" | "aborted";
 export type SncWorkerFollowUpMode = "none" | "steer" | "spawn";
+export type SncWorkerFollowUpObservationStatus = "accepted" | "ok" | "timeout" | "error";
+
+export type SncWorkerFollowUpObservation = {
+  status: SncWorkerFollowUpObservationStatus;
+  observedAt: string;
+  summary: string;
+  replyObserved: boolean;
+  replySnippet?: string;
+  sessionKey?: string;
+  deliveryStatus?: string;
+  deliveryMode?: string;
+  error?: string;
+};
 
 export type SncWorkerJobContract = {
   jobId: string;
@@ -61,6 +74,7 @@ export type SncWorkerTrackingRecord = {
   runId?: string;
   completedAt?: string;
   result?: SncWorkerResult;
+  followUp?: SncWorkerFollowUpObservation;
 };
 
 export type SncWorkerControllerState = {
@@ -360,6 +374,13 @@ function cloneState(state: SncWorkerControllerState): SncWorkerControllerState {
               recommendations: [...record.result.recommendations],
               evidence: [...record.result.evidence],
               nextSteps: [...record.result.nextSteps],
+            },
+          }
+        : {}),
+      ...(record.followUp
+        ? {
+            followUp: {
+              ...record.followUp,
             },
           }
         : {}),

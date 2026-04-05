@@ -4,7 +4,11 @@ import path from "node:path";
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import { normalizeHyphenSlug } from "openclaw/plugin-sdk/core";
 import {
+  applySncWorkerFollowUpResult,
+  applySncWorkerLaunchResult,
   buildSncWorkerResultFromCompletionEvent,
+  parseSncWorkerFollowUpToolResultFromMessage,
+  parseSncWorkerSpawnToolResultFromMessage,
   parseSncWorkerCompletionEventsFromMessages,
   type SncParsedWorkerCompletionEvent,
 } from "./worker-execution.js";
@@ -19,6 +23,8 @@ import {
   type SncWorkerControllerState,
   type SncWorkerFoldBack,
   type SncWorkerFollowUpMode,
+  type SncWorkerFollowUpObservation,
+  type SncWorkerFollowUpObservationStatus,
   type SncWorkerJobContract,
   type SncWorkerJobKind,
   type SncWorkerResult,
@@ -34,6 +40,7 @@ const MAX_CONSUMED_EVENT_KEYS = 48;
 const MAX_RECENT_FOLD_BACKS = 6;
 const MAX_FOLD_BACK_NOTES = 3;
 const MAX_FOLD_BACK_ACTIONS = 3;
+const MAX_COMPLETED_TRACKING_RECORDS = 8;
 
 export type SncWorkerState = {
   version: number;
@@ -79,6 +86,22 @@ export type SncApplyWorkerEndedLifecycleInput = {
   reason?: string;
   outcome?: string;
   error?: string;
+  updatedAt?: string;
+};
+
+export type SncApplyWorkerLaunchToolResultInput = {
+  stateDir?: string;
+  sessionId: string;
+  sessionKey?: string;
+  message: AgentMessage;
+  updatedAt?: string;
+};
+
+export type SncApplyWorkerFollowUpToolResultInput = {
+  stateDir?: string;
+  sessionId: string;
+  sessionKey?: string;
+  message: AgentMessage;
   updatedAt?: string;
 };
 
@@ -156,6 +179,56 @@ function normalizeWorkerStatus(value: unknown): SncWorkerStatus | undefined {
 
 function normalizeWorkerFollowUpMode(value: unknown): SncWorkerFollowUpMode | undefined {
   return value === "none" || value === "steer" || value === "spawn" ? value : undefined;
+}
+
+function normalizeWorkerFollowUpObservationStatus(
+  value: unknown,
+): SncWorkerFollowUpObservationStatus | undefined {
+  return value === "accepted" || value === "ok" || value === "timeout" || value === "error"
+    ? value
+    : undefined;
+}
+
+function normalizeWorkerFollowUpObservation(
+  value: unknown,
+): SncWorkerFollowUpObservation | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+
+  const status = normalizeWorkerFollowUpObservationStatus(
+    (value as { status?: unknown }).status,
+  );
+  const observedAt = normalizeOptionalString((value as { observedAt?: unknown }).observedAt);
+  const summary = normalizeOptionalString((value as { summary?: unknown }).summary);
+  const replyObserved = (value as { replyObserved?: unknown }).replyObserved;
+  const replySnippet = normalizeOptionalString(
+    (value as { replySnippet?: unknown }).replySnippet,
+  );
+  const sessionKey = normalizeOptionalString((value as { sessionKey?: unknown }).sessionKey);
+  const deliveryStatus = normalizeOptionalString(
+    (value as { deliveryStatus?: unknown }).deliveryStatus,
+  );
+  const deliveryMode = normalizeOptionalString(
+    (value as { deliveryMode?: unknown }).deliveryMode,
+  );
+  const error = normalizeOptionalString((value as { error?: unknown }).error);
+
+  if (!status || !observedAt || !summary || typeof replyObserved !== "boolean") {
+    return undefined;
+  }
+
+  return {
+    status,
+    observedAt,
+    summary,
+    replyObserved,
+    ...(replySnippet ? { replySnippet } : {}),
+    ...(sessionKey ? { sessionKey } : {}),
+    ...(deliveryStatus ? { deliveryStatus } : {}),
+    ...(deliveryMode ? { deliveryMode } : {}),
+    ...(error ? { error } : {}),
+  };
 }
 
 function normalizeWorkerJobContract(value: unknown): SncWorkerJobContract | undefined {
@@ -318,6 +391,7 @@ function normalizeWorkerTrackingRecord(value: unknown): SncWorkerTrackingRecord 
   const runId = normalizeOptionalString((value as { runId?: unknown }).runId);
   const completedAt = normalizeOptionalString((value as { completedAt?: unknown }).completedAt);
   const result = normalizeWorkerResult((value as { result?: unknown }).result);
+  const followUp = normalizeWorkerFollowUpObservation((value as { followUp?: unknown }).followUp);
 
   if (!workerId || !contract || !brief || !status || !spawnedAt || !updatedAt) {
     return undefined;
@@ -335,6 +409,7 @@ function normalizeWorkerTrackingRecord(value: unknown): SncWorkerTrackingRecord 
     ...(runId ? { runId } : {}),
     ...(completedAt ? { completedAt } : {}),
     ...(result ? { result } : {}),
+    ...(followUp ? { followUp } : {}),
   };
 }
 
@@ -360,6 +435,25 @@ function normalizeControllerState(
         .map((record) => normalizeWorkerTrackingRecord(record))
         .filter((record): record is SncWorkerTrackingRecord => Boolean(record))
     : [];
+  const liveRecords = records.filter(
+    (record) =>
+      record.status === "queued" ||
+      record.status === "spawned" ||
+      record.status === "running" ||
+      record.status === "blocked",
+  );
+  const completedRecords = records
+    .filter(
+      (record) =>
+        record.status === "complete" ||
+        record.status === "failed" ||
+        record.status === "aborted",
+    )
+    .slice(-MAX_COMPLETED_TRACKING_RECORDS);
+  const keptIds = new Set(
+    [...liveRecords, ...completedRecords].map((record) => record.workerId),
+  );
+  const boundedRecords = records.filter((record) => keptIds.has(record.workerId));
 
   return {
     ...(normalizeOptionalString((value as { controllerSessionKey?: unknown }).controllerSessionKey) ??
@@ -371,13 +465,13 @@ function normalizeControllerState(
         }
       : {}),
     maxActiveWorkers: baseState.maxActiveWorkers,
-    queuedWorkerIds: records
+    queuedWorkerIds: boundedRecords
       .filter((record) => record.status === "queued")
       .map((record) => record.workerId),
-    activeWorkerIds: records
+    activeWorkerIds: boundedRecords
       .filter((record) => record.status === "spawned" || record.status === "running")
       .map((record) => record.workerId),
-    completedWorkerIds: records
+    completedWorkerIds: boundedRecords
       .filter(
         (record) =>
           record.status === "complete" ||
@@ -385,7 +479,7 @@ function normalizeControllerState(
           record.status === "aborted",
       )
       .map((record) => record.workerId),
-    records,
+    records: boundedRecords,
   };
 }
 
@@ -610,6 +704,34 @@ function findTrackedWorker(
     }
     return false;
   });
+}
+
+function findQueuedWorkerCandidates(
+  controllerState: SncWorkerControllerState,
+): SncWorkerTrackingRecord[] {
+  return controllerState.records.filter((record) => record.status === "queued");
+}
+
+function findFollowUpWorkerCandidate(
+  controllerState: SncWorkerControllerState,
+  sessionKey?: string,
+): SncWorkerTrackingRecord | undefined {
+  const normalizedSessionKey = normalizeOptionalString(sessionKey);
+  if (normalizedSessionKey) {
+    const exact = controllerState.records.find(
+      (record) => record.childSessionKey === normalizedSessionKey,
+    );
+    if (exact) {
+      return exact;
+    }
+  }
+
+  const liveCandidates = controllerState.records.filter(
+    (record) =>
+      (record.status === "spawned" || record.status === "running" || record.status === "blocked") &&
+      Boolean(record.childSessionKey),
+  );
+  return liveCandidates.length === 1 ? liveCandidates[0] : undefined;
 }
 
 function buildLifecycleFallbackResult(params: {
@@ -879,6 +1001,120 @@ export async function applySncWorkerCompletionEvents(
   });
 }
 
+export async function applySncWorkerLaunchToolResult(
+  input: SncApplyWorkerLaunchToolResultInput,
+): Promise<SncWorkerState | null> {
+  if (!input.stateDir) {
+    return null;
+  }
+
+  const parsedResult = parseSncWorkerSpawnToolResultFromMessage(input.message);
+  if (!parsedResult) {
+    return null;
+  }
+
+  const existing = await loadSncWorkerState({
+    stateDir: input.stateDir,
+    sessionId: input.sessionId,
+    sessionKey: input.sessionKey,
+  });
+  if (!existing) {
+    return null;
+  }
+
+  const queuedCandidates = findQueuedWorkerCandidates(existing.controllerState);
+  if (queuedCandidates.length !== 1) {
+    return existing;
+  }
+
+  const queuedRecord = queuedCandidates[0];
+  const controllerState = applySncWorkerLaunchResult(existing.controllerState, {
+    workerId: queuedRecord.workerId,
+    result: parsedResult,
+    now: input.updatedAt,
+  });
+  if (controllerState === existing.controllerState) {
+    return existing;
+  }
+
+  const updatedRecord = controllerState.records.find(
+    (record) => record.workerId === queuedRecord.workerId,
+  );
+  const recentFoldBacks =
+    updatedRecord?.result &&
+    (updatedRecord.status === "complete" ||
+      updatedRecord.status === "failed" ||
+      updatedRecord.status === "aborted")
+      ? mergeFoldBacks(existing.recentFoldBacks, [
+          foldSncWorkerResult(updatedRecord.result, {
+            title: updatedRecord.contract.title,
+            objective: updatedRecord.contract.objective,
+            deliverables: [...updatedRecord.contract.deliverables],
+            constraints: [...updatedRecord.contract.constraints],
+          }),
+        ])
+      : existing.recentFoldBacks;
+
+  return await persistSncWorkerState({
+    stateDir: input.stateDir,
+    sessionId: existing.sessionId,
+    sessionKey: existing.sessionKey,
+    controllerState,
+    recentFoldBacks,
+    consumedCompletionEventKeys: existing.consumedCompletionEventKeys,
+    updatedAt: input.updatedAt,
+  });
+}
+
+export async function applySncWorkerFollowUpToolResult(
+  input: SncApplyWorkerFollowUpToolResultInput,
+): Promise<SncWorkerState | null> {
+  if (!input.stateDir) {
+    return null;
+  }
+
+  const parsedResult = parseSncWorkerFollowUpToolResultFromMessage(input.message);
+  if (!parsedResult) {
+    return null;
+  }
+
+  const existing = await loadSncWorkerState({
+    stateDir: input.stateDir,
+    sessionId: input.sessionId,
+    sessionKey: input.sessionKey,
+  });
+  if (!existing) {
+    return null;
+  }
+
+  const targetRecord = findFollowUpWorkerCandidate(
+    existing.controllerState,
+    normalizeOptionalString(parsedResult.sessionKey),
+  );
+  if (!targetRecord) {
+    return existing;
+  }
+
+  const controllerState = applySncWorkerFollowUpResult(existing.controllerState, {
+    workerId: targetRecord.workerId,
+    result: parsedResult,
+    now: input.updatedAt,
+  });
+  if (controllerState === existing.controllerState) {
+    return existing;
+  }
+
+  return await persistSncWorkerState({
+    stateDir: input.stateDir,
+    sessionId: existing.sessionId,
+    sessionKey: existing.sessionKey,
+    controllerState,
+    recentFoldBacks: existing.recentFoldBacks,
+    consumedCompletionEventKeys: existing.consumedCompletionEventKeys,
+    updatedAt: input.updatedAt,
+  });
+}
+
 export function buildSncWorkerStateSection(state: SncWorkerState): string | undefined {
   if (
     state.controllerState.records.length === 0 &&
@@ -904,6 +1140,17 @@ export function buildSncWorkerStateSection(state: SncWorkerState): string | unde
           record.childSessionKey ? ` / child=${record.childSessionKey}` : ""
         }`,
       );
+      if (record.followUp) {
+        lines.push(`  follow-up: [${record.followUp.status}] ${record.followUp.summary}`);
+        if (record.followUp.replySnippet) {
+          lines.push(`  reply: ${record.followUp.replySnippet}`);
+        }
+        if (record.followUp.deliveryStatus || record.followUp.deliveryMode) {
+          lines.push(
+            `  delivery: ${record.followUp.deliveryStatus ?? "unknown"} / ${record.followUp.deliveryMode ?? "unknown"}`,
+          );
+        }
+      }
     }
   }
 

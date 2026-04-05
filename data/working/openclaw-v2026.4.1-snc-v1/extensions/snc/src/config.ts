@@ -2,6 +2,15 @@ import path from "node:path";
 
 const DEFAULT_MAX_SECTION_BYTES = 24_576;
 const MIN_MAX_SECTION_BYTES = 512;
+const DEFAULT_SPECIALIZATION_MODE = "auto" as const;
+const DEFAULT_DURABLE_MEMORY_MAX_CATALOG_ENTRIES = 64;
+const MIN_DURABLE_MEMORY_MAX_CATALOG_ENTRIES = 1;
+const DEFAULT_DURABLE_MEMORY_STALE_ENTRY_DAYS = 30;
+const MIN_DURABLE_MEMORY_STALE_ENTRY_DAYS = 1;
+const DEFAULT_DURABLE_MEMORY_PROJECTION_LIMIT = 3;
+const MIN_DURABLE_MEMORY_PROJECTION_LIMIT = 1;
+const DEFAULT_DURABLE_MEMORY_PROJECTION_MINIMUM_SCORE = 3;
+const MIN_DURABLE_MEMORY_PROJECTION_MINIMUM_SCORE = 0;
 const DEFAULT_HOOK_MAX_REWRITES_PER_SESSION = 6;
 const MIN_HOOK_MAX_REWRITES_PER_SESSION = 1;
 const DEFAULT_HOOK_MAX_REPLACEMENT_BYTES = 768;
@@ -26,12 +35,23 @@ export type SncPluginHookConfig = {
   maxToolResultBytes?: number;
 };
 
+export type SncSpecializationMode = "auto" | "writing" | "general";
+
+export type SncPluginDurableMemoryConfig = {
+  maxCatalogEntries?: number;
+  staleEntryDays?: number;
+  projectionLimit?: number;
+  projectionMinimumScore?: number;
+};
+
 export type SncPluginConfig = {
   briefFile?: string;
   ledgerFile?: string;
   packetFiles?: string[];
   packetDir?: string;
   stateDir?: string;
+  specializationMode?: SncSpecializationMode;
+  durableMemory?: SncPluginDurableMemoryConfig;
   maxSectionBytes?: number;
   hooks?: SncPluginHookConfig;
 };
@@ -50,6 +70,13 @@ export type SncResolvedConfig = {
   packetFiles: string[];
   packetDir?: string;
   stateDir?: string;
+  specializationMode: SncSpecializationMode;
+  durableMemory: {
+    maxCatalogEntries: number;
+    staleEntryDays: number;
+    projectionLimit: number;
+    projectionMinimumScore: number;
+  };
   maxSectionBytes: number;
   hooks: SncResolvedHookConfig;
 };
@@ -120,6 +147,10 @@ function normalizeBoundedInteger(
   return Math.max(minimum, Math.floor(value));
 }
 
+function resolveSpecializationMode(value: unknown): SncSpecializationMode {
+  return value === "writing" || value === "general" ? value : DEFAULT_SPECIALIZATION_MODE;
+}
+
 function resolveHookConfig(value: unknown): SncResolvedHookConfig {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return {
@@ -164,6 +195,49 @@ function resolveHookConfig(value: unknown): SncResolvedHookConfig {
   };
 }
 
+function resolveDurableMemoryConfig(
+  value: unknown,
+): SncResolvedConfig["durableMemory"] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {
+      maxCatalogEntries: DEFAULT_DURABLE_MEMORY_MAX_CATALOG_ENTRIES,
+      staleEntryDays: DEFAULT_DURABLE_MEMORY_STALE_ENTRY_DAYS,
+      projectionLimit: DEFAULT_DURABLE_MEMORY_PROJECTION_LIMIT,
+      projectionMinimumScore: DEFAULT_DURABLE_MEMORY_PROJECTION_MINIMUM_SCORE,
+    };
+  }
+
+  const durableMemory = value as {
+    maxCatalogEntries?: unknown;
+    staleEntryDays?: unknown;
+    projectionLimit?: unknown;
+    projectionMinimumScore?: unknown;
+  };
+
+  return {
+    maxCatalogEntries: normalizeBoundedInteger(
+      durableMemory.maxCatalogEntries,
+      DEFAULT_DURABLE_MEMORY_MAX_CATALOG_ENTRIES,
+      MIN_DURABLE_MEMORY_MAX_CATALOG_ENTRIES,
+    ),
+    staleEntryDays: normalizeBoundedInteger(
+      durableMemory.staleEntryDays,
+      DEFAULT_DURABLE_MEMORY_STALE_ENTRY_DAYS,
+      MIN_DURABLE_MEMORY_STALE_ENTRY_DAYS,
+    ),
+    projectionLimit: normalizeBoundedInteger(
+      durableMemory.projectionLimit,
+      DEFAULT_DURABLE_MEMORY_PROJECTION_LIMIT,
+      MIN_DURABLE_MEMORY_PROJECTION_LIMIT,
+    ),
+    projectionMinimumScore: normalizeBoundedInteger(
+      durableMemory.projectionMinimumScore,
+      DEFAULT_DURABLE_MEMORY_PROJECTION_MINIMUM_SCORE,
+      MIN_DURABLE_MEMORY_PROJECTION_MINIMUM_SCORE,
+    ),
+  };
+}
+
 export function resolveSncPluginConfig(
   value: Record<string, unknown> | undefined,
   resolvePath: (input: string) => string,
@@ -177,6 +251,8 @@ export function resolveSncPluginConfig(
     packetFiles: resolvePathList(raw.packetFiles, resolvePath),
     packetDir: resolveOptionalPath(raw.packetDir, resolvePath),
     stateDir: resolveOptionalPath(raw.stateDir, resolvePath),
+    specializationMode: resolveSpecializationMode(raw.specializationMode),
+    durableMemory: resolveDurableMemoryConfig(raw.durableMemory),
     maxSectionBytes:
       typeof maxSectionBytesRaw === "number" && Number.isFinite(maxSectionBytesRaw)
         ? Math.max(MIN_MAX_SECTION_BYTES, Math.floor(maxSectionBytesRaw))

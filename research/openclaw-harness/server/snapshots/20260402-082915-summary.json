@@ -1,0 +1,35 @@
+{
+  "source": {
+    "host": "47.253.63.166",
+    "path": "/home/admin/.openclaw/openclaw.json"
+  },
+  "captured_at": "20260402-082915",
+  "top_keys": [
+    "meta",
+    "wizard",
+    "auth",
+    "models",
+    "agents",
+    "tools",
+    "bindings",
+    "commands",
+    "session",
+    "channels",
+    "gateway",
+    "plugins"
+  ],
+  "models_keys": [
+    "mode",
+    "providers"
+  ],
+  "agents_keys": [
+    "defaults",
+    "list"
+  ],
+  "bindings_count": 9,
+  "plugins_keys": [
+    "load",
+    "entries",
+    "installs"
+  ]
+}

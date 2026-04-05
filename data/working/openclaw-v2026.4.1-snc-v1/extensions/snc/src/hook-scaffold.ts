@@ -12,6 +12,8 @@ import {
 } from "./replacement-ledger.js";
 import { shapeSncTranscriptMessage } from "./transcript-shaping.js";
 import {
+  applySncWorkerFollowUpToolResult,
+  applySncWorkerLaunchToolResult,
   applySncWorkerEndedLifecycle,
   applySncWorkerSpawnedLifecycle,
 } from "./worker-state.js";
@@ -357,10 +359,10 @@ class SncHookRuntime {
     return { message: shaped.replacementMessage };
   }
 
-  handleToolResultPersist(
+  async handleToolResultPersist(
     event: SncToolResultPersistEvent,
     ctx: SncToolResultPersistContext,
-  ): SncToolResultPersistResult | void {
+  ): Promise<SncToolResultPersistResult | void> {
     if (event.message.role !== "toolResult") {
       return;
     }
@@ -385,6 +387,8 @@ class SncHookRuntime {
     if (existing) {
       return this.applyToolResultDecision(event.message, existing);
     }
+
+    await this.syncWorkerToolResult(event, ctx);
 
     const replacementText = buildToolResultPreview({
       message: event.message,
@@ -509,6 +513,43 @@ class SncHookRuntime {
     return {
       message: replaceToolResultMessageText(message, decision.replacementPreview),
     };
+  }
+
+  private async syncWorkerToolResult(
+    event: SncToolResultPersistEvent,
+    ctx: SncToolResultPersistContext,
+  ): Promise<void> {
+    if (!this.config.stateDir) {
+      return;
+    }
+
+    const toolName = normalizeOptionalString(event.toolName) ?? normalizeOptionalString(ctx.toolName);
+    const sessionKey = normalizeOptionalString(ctx.sessionKey);
+    if ((toolName !== "sessions_spawn" && toolName !== "sessions_send") || !sessionKey) {
+      return;
+    }
+
+    try {
+      if (toolName === "sessions_spawn") {
+        await applySncWorkerLaunchToolResult({
+          stateDir: this.config.stateDir,
+          sessionId: sessionKey,
+          sessionKey,
+          message: event.message,
+          updatedAt: new Date().toISOString(),
+        });
+      } else {
+        await applySncWorkerFollowUpToolResult({
+          stateDir: this.config.stateDir,
+          sessionId: sessionKey,
+          sessionKey,
+          message: event.message,
+          updatedAt: new Date().toISOString(),
+        });
+      }
+    } catch {
+      // Best-effort only: hook shaping should not break runtime tool-result persistence.
+    }
   }
 }
 

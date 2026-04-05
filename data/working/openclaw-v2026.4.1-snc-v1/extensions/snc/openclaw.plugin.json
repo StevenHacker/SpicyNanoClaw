@@ -30,6 +30,36 @@
         "type": "string",
         "minLength": 1
       },
+      "specializationMode": {
+        "type": "string",
+        "enum": [
+          "auto",
+          "writing",
+          "general"
+        ]
+      },
+      "durableMemory": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "maxCatalogEntries": {
+            "type": "number",
+            "minimum": 1
+          },
+          "staleEntryDays": {
+            "type": "number",
+            "minimum": 1
+          },
+          "projectionLimit": {
+            "type": "number",
+            "minimum": 1
+          },
+          "projectionMinimumScore": {
+            "type": "number",
+            "minimum": 0
+          }
+        }
+      },
       "hooks": {
         "type": "object",
         "additionalProperties": false,
@@ -90,6 +120,14 @@
     "stateDir": {
       "label": "State Directory",
       "help": "Optional directory where SNC stores per-session state snapshots for reuse across turns."
+    },
+    "specializationMode": {
+      "label": "Specialization Mode",
+      "help": "Choose how strongly SNC frames continuity as writing-specific. Use `auto` to prefer writing mode when writing artifacts are configured and neutral continuity otherwise."
+    },
+    "durableMemory": {
+      "label": "Durable Memory",
+      "help": "Bounded controls for SNC-owned durable memory retention and projection. Keep these conservative unless continuity evidence shows the defaults are too weak."
     },
     "hooks": {
       "label": "Hook Scaffold",

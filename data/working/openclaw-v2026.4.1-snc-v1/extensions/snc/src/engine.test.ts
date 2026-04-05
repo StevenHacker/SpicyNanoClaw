@@ -13,7 +13,10 @@ vi.mock("openclaw/plugin-sdk/core", async () => {
   };
 });
 import { delegateCompactionToRuntime } from "openclaw/plugin-sdk/core";
-import { loadSncDurableMemoryCatalog } from "./durable-memory.js";
+import {
+  loadSncDurableMemoryCatalog,
+  persistSncDurableMemoryStore,
+} from "./durable-memory.js";
 import { SncContextEngine } from "./engine.js";
 import type { SncResolvedConfig } from "./config.js";
 import { applySncWorkerLaunchResult, prepareSncWorkerLaunch } from "./worker-execution.js";
@@ -21,7 +24,7 @@ import {
   buildSncWorkerJobContract,
   createSncWorkerControllerState,
 } from "./worker-policy.js";
-import { persistSncWorkerState } from "./worker-state.js";
+import { loadSncWorkerState, persistSncWorkerState } from "./worker-state.js";
 
 const tempDirs: string[] = [];
 
@@ -34,6 +37,13 @@ function createTempDir(): string {
 function createConfig(overrides: Partial<SncResolvedConfig> = {}): SncResolvedConfig {
   return {
     packetFiles: [],
+    specializationMode: "auto",
+    durableMemory: {
+      maxCatalogEntries: 64,
+      staleEntryDays: 30,
+      projectionLimit: 3,
+      projectionMinimumScore: 3,
+    },
     maxSectionBytes: 24_576,
     hooks: {
       enabled: false,
@@ -161,13 +171,14 @@ describe("SncContextEngine", () => {
     });
 
     expect(assembled.messages).toEqual([]);
+    expect(assembled.systemPromptAddition).toContain("SNC writing context follows.");
     expect(assembled.systemPromptAddition).toContain("## brief");
     expect(assembled.systemPromptAddition).toContain("Project brief");
     expect(assembled.systemPromptAddition).toContain("## scene");
     expect(assembled.systemPromptAddition).toContain("Scene packet");
     expect(assembled.systemPromptAddition).toContain("## Session snapshot");
-    expect(assembled.systemPromptAddition).toContain("Story ledger:");
-    expect(assembled.systemPromptAddition).toContain("Chapter state:");
+    expect(assembled.systemPromptAddition).toContain("Continuity ledger:");
+    expect(assembled.systemPromptAddition).toContain("Active state:");
     expect(assembled.systemPromptAddition).toContain(
       "latestUserDirective: Please continue chapter one, keep a noir tone, and avoid exposition.",
     );
@@ -214,6 +225,7 @@ describe("SncContextEngine", () => {
     const engine = new SncContextEngine(
       createConfig({
         stateDir,
+        specializationMode: "writing",
       }),
       {
         info: vi.fn(),
@@ -266,6 +278,120 @@ describe("SncContextEngine", () => {
     expect(params?.customInstructions).toContain("latest user directive");
     expect(params?.customInstructions).toContain("latest assistant plan");
     expect(params?.customInstructions).toContain("continuity to preserve");
+  });
+
+  it("defaults to neutral continuity framing when no writing artifacts are configured", async () => {
+    const root = createTempDir();
+    const stateDir = path.join(root, ".snc-state");
+    const engine = new SncContextEngine(
+      createConfig({
+        stateDir,
+      }),
+      {
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+      },
+    );
+
+    await engine.afterTurn({
+      sessionId: "session-general-1",
+      sessionKey: "agent:main:dev",
+      sessionFile: path.join(root, "session-general.jsonl"),
+      messages: [
+        message("user", "Please fix the failing test and keep the patch minimal.", 1),
+        message(
+          "assistant",
+          "Next I will inspect the failing test, patch the bug, and rerun the suite.",
+          2,
+        ),
+      ],
+      prePromptMessageCount: 0,
+    });
+
+    const assembled = await engine.assemble({
+      sessionId: "session-general-1",
+      sessionKey: "agent:main:dev",
+      messages: [],
+    });
+
+    expect(assembled.systemPromptAddition).toContain("SNC continuity context follows.");
+    expect(assembled.systemPromptAddition).not.toContain("SNC writing context follows.");
+    expect(assembled.systemPromptAddition).toContain("Continuity ledger:");
+    expect(assembled.systemPromptAddition).toContain("Active state:");
+  });
+
+  it("can force general framing even when writing artifacts exist", async () => {
+    const root = createTempDir();
+    const briefFile = path.join(root, "brief.md");
+    writeFileSync(briefFile, "Draft chapter two with a tighter opening.", "utf8");
+
+    const engine = new SncContextEngine(
+      createConfig({
+        briefFile,
+        specializationMode: "general",
+      }),
+      {
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+      },
+    );
+
+    const assembled = await engine.assemble({
+      sessionId: "session-general-2",
+      sessionKey: "agent:main:mixed",
+      messages: [],
+    });
+
+    expect(assembled.systemPromptAddition).toContain("SNC continuity context follows.");
+    expect(assembled.systemPromptAddition).not.toContain("SNC writing context follows.");
+  });
+
+  it("uses neutral compaction anchors when specialization mode is general", async () => {
+    const root = createTempDir();
+    const stateDir = path.join(root, ".snc-state");
+    const sessionFile = path.join(root, "session-general-compact.jsonl");
+    const engine = new SncContextEngine(
+      createConfig({
+        stateDir,
+        specializationMode: "general",
+      }),
+      {
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+      },
+    );
+
+    await engine.afterTurn({
+      sessionId: "session-general-compact-1",
+      sessionKey: "agent:main:dev",
+      sessionFile,
+      messages: [
+        message("user", "Please keep the patch minimal and avoid changing public APIs.", 1),
+        message("assistant", "Next I will isolate the regression, patch it, and rerun the tests.", 2),
+      ],
+      prePromptMessageCount: 0,
+    });
+
+    vi.mocked(delegateCompactionToRuntime).mockResolvedValue({
+      ok: true,
+      compacted: true,
+      reason: "delegated",
+    });
+
+    await engine.compact({
+      sessionId: "session-general-compact-1",
+      sessionKey: "agent:main:dev",
+      sessionFile,
+      tokenBudget: 4096,
+      force: true,
+    });
+
+    const params = vi.mocked(delegateCompactionToRuntime).mock.calls.at(-1)?.[0];
+    expect(params?.customInstructions).toContain("Preserve these SNC continuity anchors during compaction.");
+    expect(params?.customInstructions).not.toContain("Preserve these SNC writing anchors during compaction.");
   });
 
   it("harvests durable memory after turn finalization and projects it during assemble", async () => {
@@ -325,6 +451,83 @@ describe("SncContextEngine", () => {
     expect(assembled.systemPromptAddition).toContain("Please keep the noir tone and first-person POV while chapter three stays centered on the missing-ring clue.");
     expect(assembled.systemPromptAddition).toContain("missing-ring clue");
     expect(assembled.systemPromptAddition).toContain("Preserve the ring clue and the chapter three payoff.");
+  });
+
+  it("projects durable-memory diagnostics when pruning pressure or projection saturation appears", async () => {
+    const root = createTempDir();
+    const stateDir = path.join(root, ".snc-state");
+    const engine = new SncContextEngine(
+      createConfig({
+        stateDir,
+        durableMemory: {
+          maxCatalogEntries: 64,
+          staleEntryDays: 30,
+          projectionLimit: 1,
+          projectionMinimumScore: 3,
+        },
+      }),
+      {
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+      },
+    );
+
+    await engine.afterTurn({
+      sessionId: "session-durable-2",
+      sessionKey: "agent:main:story",
+      sessionFile: path.join(root, "session-durable-2.jsonl"),
+      messages: [
+        message(
+          "user",
+          "Please keep the noir tone and first-person POV while chapter three stays centered on the missing-ring clue.",
+          1,
+        ),
+        message(
+          "assistant",
+          "Next I will draft the opening scene and keep the missing-ring clue active without flattening the payoff.",
+          2,
+        ),
+      ],
+      prePromptMessageCount: 0,
+      autoCompactionSummary: "Preserve the ring clue and the chapter three payoff.",
+    });
+
+    await persistSncDurableMemoryStore({
+      stateDir,
+      entries: [
+        {
+          version: 1,
+          id: "dm-stale-weak",
+          category: "fact",
+          text: "Chapter 1 bridge note",
+          tags: ["fact"],
+          strength: "derived",
+          firstCapturedAt: "2026-01-01T00:00:00.000Z",
+          lastConfirmedAt: "2026-01-01T00:00:00.000Z",
+          confirmationCount: 1,
+          evidence: [{ sessionId: "session-old", source: "chapter-state" }],
+        },
+      ],
+      now: "2026-02-01T00:00:00.000Z",
+      staleEntryDays: 365,
+    });
+
+    const assembled = await engine.assemble({
+      sessionId: "session-durable-2",
+      sessionKey: "agent:main:story",
+      messages: [
+        message(
+          "user",
+          "Please keep the noir tone and first-person POV while chapter three stays centered on the missing-ring clue.",
+          3,
+        ),
+      ],
+    });
+
+    expect(assembled.systemPromptAddition).toContain("## Durable memory diagnostics");
+    expect(assembled.systemPromptAddition).toContain("Weak single-signal entries:");
+    expect(assembled.systemPromptAddition).toContain("Projection is saturated at limit 1;");
   });
 
   it("folds worker completion events into persisted worker state and projects them during assemble", async () => {
@@ -407,6 +610,239 @@ describe("SncContextEngine", () => {
       "[complete] Check chapter pressure: completed successfully.",
     );
     expect(assembled.systemPromptAddition).toContain("action: accept result");
+  });
+
+  it("queues a bounded helper launch after turn and projects a launch lane during assemble", async () => {
+    const root = createTempDir();
+    const stateDir = path.join(root, ".snc-state");
+    const engine = new SncContextEngine(
+      createConfig({
+        stateDir,
+      }),
+      {
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+      },
+    );
+
+    await engine.afterTurn({
+      sessionId: "session-worker-launch-1",
+      sessionKey: "agent:main:story",
+      sessionFile: path.join(root, "session-worker-launch-1.jsonl"),
+      messages: [
+        message(
+          "user",
+          "Please keep chapter seven coherent and do not flatten the reveal.",
+          1,
+        ),
+        message(
+          "assistant",
+          "Next I will ask a helper to review the continuity anchors for chapter seven and report any conflicts.",
+          2,
+        ),
+      ],
+      prePromptMessageCount: 0,
+    });
+
+    const workerState = await loadSncWorkerState({
+      stateDir,
+      sessionId: "session-worker-launch-1",
+      sessionKey: "agent:main:story",
+    });
+    expect(workerState?.controllerState.queuedWorkerIds).toHaveLength(1);
+    expect(workerState?.controllerState.records[0]?.contract.title).toContain("Continuity helper");
+
+    const assembled = await engine.assemble({
+      sessionId: "session-worker-launch-1",
+      sessionKey: "agent:main:story",
+      messages: [],
+    });
+
+    expect(assembled.systemPromptAddition).toContain("## Worker launch lane");
+    expect(assembled.systemPromptAddition).toContain("Queued helper launches:");
+    expect(assembled.systemPromptAddition).toContain("tool: sessions_spawn");
+    expect(assembled.systemPromptAddition).toContain("runtime: subagent / mode: run / thread: false");
+    expect(assembled.systemPromptAddition).toContain("Continuity helper");
+  });
+
+  it("holds repeated helper launch intent shortly after a recent completion instead of requeueing it", async () => {
+    const root = createTempDir();
+    const stateDir = path.join(root, ".snc-state");
+    const engine = new SncContextEngine(
+      createConfig({
+        stateDir,
+      }),
+      {
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+      },
+    );
+
+    await engine.afterTurn({
+      sessionId: "session-worker-replay-1",
+      sessionKey: "agent:main:story",
+      sessionFile: path.join(root, "session-worker-replay-1.jsonl"),
+      messages: [
+        message("user", "Please keep chapter seven coherent and do not flatten the reveal.", 1),
+        message(
+          "assistant",
+          "Next I will ask a helper to review the continuity anchors for chapter seven and report any conflicts.",
+          2,
+        ),
+      ],
+      prePromptMessageCount: 0,
+    });
+
+    const queued = await loadSncWorkerState({
+      stateDir,
+      sessionId: "session-worker-replay-1",
+      sessionKey: "agent:main:story",
+    });
+    const workerId = queued?.controllerState.records[0]?.workerId;
+    expect(workerId).toBeTruthy();
+
+    const accepted = applySncWorkerLaunchResult(
+      queued?.controllerState ?? createSncWorkerControllerState(),
+      {
+        workerId: workerId ?? "missing-worker",
+        result: {
+          status: "accepted",
+          childSessionKey: "agent:main:subagent:replay-1",
+          runId: "run-replay-1",
+        },
+        now: "2026-04-04T10:01:00.000Z",
+      },
+    );
+    await persistSncWorkerState({
+      stateDir,
+      sessionId: "session-worker-replay-1",
+      sessionKey: "agent:main:story",
+      controllerState: accepted,
+      recentFoldBacks: queued?.recentFoldBacks ?? [],
+      consumedCompletionEventKeys: queued?.consumedCompletionEventKeys ?? [],
+      updatedAt: "2026-04-04T10:01:00.000Z",
+    });
+
+    await engine.afterTurn({
+      sessionId: "session-worker-replay-1",
+      sessionKey: "agent:main:story",
+      sessionFile: path.join(root, "session-worker-replay-1.jsonl"),
+      messages: [
+        message(
+          "assistant",
+          buildCompletionEventText({
+            childSessionKey: "agent:main:subagent:replay-1",
+            taskLabel: "Review helper: chapter seven reveal timing",
+            statusLabel: "completed successfully",
+            resultText: "No new continuity conflicts found in the chapter-seven reveal path.",
+          }),
+          3,
+        ),
+      ],
+      prePromptMessageCount: 0,
+    });
+
+    await engine.afterTurn({
+      sessionId: "session-worker-replay-1",
+      sessionKey: "agent:main:story",
+      sessionFile: path.join(root, "session-worker-replay-1.jsonl"),
+      messages: [
+        message("user", "Please keep chapter seven coherent and do not flatten the reveal.", 4),
+        message(
+          "assistant",
+          "Next I will ask a helper to review the continuity anchors for chapter seven and report any conflicts.",
+          5,
+        ),
+      ],
+      prePromptMessageCount: 0,
+    });
+
+    const workerState = await loadSncWorkerState({
+      stateDir,
+      sessionId: "session-worker-replay-1",
+      sessionKey: "agent:main:story",
+    });
+    expect(workerState?.controllerState.queuedWorkerIds).toHaveLength(0);
+
+    const assembled = await engine.assemble({
+      sessionId: "session-worker-replay-1",
+      sessionKey: "agent:main:story",
+      messages: [],
+    });
+
+    expect(assembled.systemPromptAddition).toContain("## Worker launch lane");
+    expect(assembled.systemPromptAddition).toContain("Recent launch replay holds:");
+    expect(assembled.systemPromptAddition).not.toContain("Queued helper launches:");
+    expect(assembled.systemPromptAddition).toContain("Identical helper work completed recently.");
+  });
+
+  it("projects worker diagnostics when live worker state has gone stale", async () => {
+    const root = createTempDir();
+    const stateDir = path.join(root, ".snc-state");
+    const engine = new SncContextEngine(
+      createConfig({
+        stateDir,
+      }),
+      {
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+      },
+    );
+
+    const contract = buildSncWorkerJobContract({
+      jobId: "eng-worker-diag-01",
+      title: "Review helper: chapter pressure",
+      kind: "review",
+      objective: "Review the current chapter pressure and flag the strongest issues.",
+      spawnMode: "run",
+      completionMode: "one-shot",
+    });
+    const prepared = prepareSncWorkerLaunch(
+      createSncWorkerControllerState({
+        controllerSessionKey: "agent:main:story",
+      }),
+      {
+        contract,
+        workerId: "eng-worker-diag-01",
+        controllerSessionKey: "agent:main:story",
+        now: "2026-04-04T08:00:00.000Z",
+      },
+    );
+    const spawned = applySncWorkerLaunchResult(prepared.state, {
+      workerId: "eng-worker-diag-01",
+      result: {
+        status: "accepted",
+        childSessionKey: "agent:main:subagent:diag-1",
+      },
+      now: "2026-04-04T08:00:10.000Z",
+    });
+    await persistSncWorkerState({
+      stateDir,
+      sessionId: "session-worker-diag-1",
+      sessionKey: "agent:main:story",
+      controllerState: spawned,
+      updatedAt: "2026-04-04T08:00:10.000Z",
+    });
+
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-04T09:10:00.000Z"));
+    try {
+      const assembled = await engine.assemble({
+        sessionId: "session-worker-diag-1",
+        sessionKey: "agent:main:story",
+        messages: [],
+      });
+
+      expect(assembled.systemPromptAddition).toContain("## Worker diagnostics");
+      expect(assembled.systemPromptAddition).toContain("controller-side diagnostics");
+      expect(assembled.systemPromptAddition).toContain("eng-worker-diag-01: spawned for 69m old");
+      expect(assembled.systemPromptAddition).toContain("sessions_yield");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("conservatively rewrites one old assistant planning message during maintain", async () => {

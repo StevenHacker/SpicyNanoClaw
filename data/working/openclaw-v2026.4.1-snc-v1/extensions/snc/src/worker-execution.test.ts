@@ -1,6 +1,7 @@
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import { describe, expect, it } from "vitest";
 import {
+  applySncWorkerFollowUpResult,
   applySncWorkerLaunchResult,
   buildSncWorkerLaunchPlan,
   buildSncWorkerResultFromCompletionEvent,
@@ -134,8 +135,158 @@ describe("SNC worker execution adapter scaffold", () => {
 
     const record = failed.records.find((entry) => entry.workerId === "worker-we-04");
     expect(record?.status).toBe("failed");
+    expect(record?.result?.summary).toContain("host refused launch");
     expect(record?.result?.summary).toContain("max active children");
+    expect(record?.result?.evidence).toContain("launch class: host-refused");
     expect(failed.completedWorkerIds).toEqual(["worker-we-04"]);
+  });
+
+  it("marks ambiguous launch errors as inspect-first failures when identifiers already exist", () => {
+    const contract = buildSncWorkerJobContract({
+      jobId: "we-04b",
+      title: "ACP helper",
+      kind: "analysis",
+      objective: "Launch a helper that may already have started.",
+    });
+
+    const prepared = prepareSncWorkerLaunch(createSncWorkerControllerState(), {
+      contract,
+      workerId: "worker-we-04b",
+      now: "2026-04-04T08:11:00.000Z",
+    });
+
+    const failed = applySncWorkerLaunchResult(prepared.state, {
+      workerId: "worker-we-04b",
+      result: {
+        status: "error",
+        childSessionKey: "agent:main:subagent:ambiguous-1",
+        runId: "run-ambiguous-1",
+        error:
+          "Failed to register ACP run: cleanup was attempted, but the already-started ACP run may still finish in the background.",
+      },
+      now: "2026-04-04T08:11:01.000Z",
+    });
+
+    const record = failed.records.find((entry) => entry.workerId === "worker-we-04b");
+    expect(record?.status).toBe("failed");
+    expect(record?.result?.summary).toContain("inspect the existing child session before retrying");
+    expect(record?.result?.evidence).toContain("launch class: runtime-ambiguous");
+    expect(record?.result?.evidence).toContain("runId: run-ambiguous-1");
+  });
+
+  it("marks contract misuse as validation failure instead of generic runtime failure", () => {
+    const contract = buildSncWorkerJobContract({
+      jobId: "we-04c",
+      title: "Misconfigured helper",
+      kind: "analysis",
+      objective: "Demonstrate launch validation classification.",
+    });
+
+    const prepared = prepareSncWorkerLaunch(createSncWorkerControllerState(), {
+      contract,
+      workerId: "worker-we-04c",
+      now: "2026-04-04T08:12:00.000Z",
+    });
+
+    const failed = applySncWorkerLaunchResult(prepared.state, {
+      workerId: "worker-we-04c",
+      result: {
+        status: "error",
+        error: "streamTo is only supported for runtime=acp; got runtime=subagent",
+      },
+      now: "2026-04-04T08:12:01.000Z",
+    });
+
+    const record = failed.records.find((entry) => entry.workerId === "worker-we-04c");
+    expect(record?.status).toBe("failed");
+    expect(record?.result?.summary).toContain("launch request invalid");
+    expect(record?.result?.evidence).toContain("launch class: validation");
+  });
+
+  it("records follow-up reply visibility as bounded worker observation instead of terminal state", () => {
+    const contract = buildSncWorkerJobContract({
+      jobId: "we-04d",
+      title: "Follow-up helper",
+      kind: "analysis",
+      objective: "Handle a bounded worker follow-up.",
+    });
+
+    const prepared = prepareSncWorkerLaunch(createSncWorkerControllerState(), {
+      contract,
+      workerId: "worker-we-04d",
+      now: "2026-04-04T08:13:00.000Z",
+    });
+    const spawned = applySncWorkerLaunchResult(prepared.state, {
+      workerId: "worker-we-04d",
+      result: {
+        status: "accepted",
+        childSessionKey: "agent:main:subagent:follow-up-1",
+        runId: "run-follow-up-1",
+      },
+      now: "2026-04-04T08:13:01.000Z",
+    });
+
+    const observed = applySncWorkerFollowUpResult(spawned, {
+      workerId: "worker-we-04d",
+      result: {
+        status: "ok",
+        sessionKey: "agent:main:subagent:follow-up-1",
+        reply: "Found the continuity break in scene seven and narrowed it to one callback mismatch.",
+        delivery: {
+          status: "pending",
+          mode: "announce",
+        },
+      },
+      now: "2026-04-04T08:13:40.000Z",
+    });
+
+    const record = observed.records.find((entry) => entry.workerId === "worker-we-04d");
+    expect(record?.status).toBe("spawned");
+    expect(record?.followUp?.status).toBe("ok");
+    expect(record?.followUp?.summary).toContain("Reply observed from worker");
+    expect(record?.followUp?.replyObserved).toBe(true);
+    expect(record?.followUp?.replySnippet).toContain("continuity break");
+    expect(record?.followUp?.deliveryStatus).toBe("pending");
+    expect(record?.followUp?.deliveryMode).toBe("announce");
+  });
+
+  it("records timeout follow-up outcome without pretending the worker is terminal", () => {
+    const contract = buildSncWorkerJobContract({
+      jobId: "we-04e",
+      title: "Slow helper",
+      kind: "analysis",
+      objective: "Demonstrate follow-up timeout handling.",
+    });
+
+    const prepared = prepareSncWorkerLaunch(createSncWorkerControllerState(), {
+      contract,
+      workerId: "worker-we-04e",
+      now: "2026-04-04T08:14:00.000Z",
+    });
+    const spawned = applySncWorkerLaunchResult(prepared.state, {
+      workerId: "worker-we-04e",
+      result: {
+        status: "accepted",
+        childSessionKey: "agent:main:subagent:follow-up-2",
+      },
+      now: "2026-04-04T08:14:01.000Z",
+    });
+
+    const observed = applySncWorkerFollowUpResult(spawned, {
+      workerId: "worker-we-04e",
+      result: {
+        status: "timeout",
+        sessionKey: "agent:main:subagent:follow-up-2",
+        error: "agent.wait timed out after 15000 ms",
+      },
+      now: "2026-04-04T08:14:20.000Z",
+    });
+
+    const record = observed.records.find((entry) => entry.workerId === "worker-we-04e");
+    expect(record?.status).toBe("spawned");
+    expect(record?.followUp?.status).toBe("timeout");
+    expect(record?.followUp?.summary).toContain("No reply was observed before timeout");
+    expect(record?.followUp?.error).toContain("timed out");
   });
 
   it("builds yield and subagent control requests from tracked worker state", () => {

@@ -1,0 +1,522 @@
+{
+  "meta": {
+    "lastTouchedVersion": "2026.3.8",
+    "lastTouchedAt": "2026-03-30T02:50:24.917Z"
+  },
+  "wizard": {
+    "lastRunAt": "2026-03-11T09:51:26.954Z",
+    "lastRunVersion": "2026.3.8",
+    "lastRunCommand": "doctor",
+    "lastRunMode": "local"
+  },
+  "auth": {
+    "_redacted": "auth"
+  },
+  "models": {
+    "mode": "merge",
+    "providers": {
+      "kimi-coding": {
+        "baseUrl": "https://api.kimi.com/coding/",
+        "api": "anthropic-messages",
+        "models": [
+          {
+            "id": "k2p5",
+            "name": "Kimi for Coding",
+            "reasoning": true,
+            "input": [
+              "text",
+              "image"
+            ],
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0
+            },
+            "contextWindow": 262144,
+            "maxTokens": "<redacted>"
+          }
+        ]
+      },
+      "honoursoft": {
+        "baseUrl": "https://cc.honoursoft.cn",
+        "apiKey": "<redacted:apiKey>",
+        "auth": "<redacted:auth>",
+        "api": "anthropic-messages",
+        "headers": {},
+        "authHeader": "<redacted>",
+        "models": []
+      },
+      "bailian": {
+        "baseUrl": "https://coding.dashscope.aliyuncs.com/v1",
+        "apiKey": "<redacted:apiKey>",
+        "auth": "<redacted:auth>",
+        "api": "openai-completions",
+        "models": [
+          {
+            "id": "qwen3.5-plus",
+            "name": "qwen3.5-plus",
+            "reasoning": false,
+            "input": [
+              "text",
+              "image"
+            ],
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0
+            },
+            "contextWindow": 1000000,
+            "maxTokens": "<redacted>"
+          },
+          {
+            "id": "qwen3-max-2026-01-23",
+            "name": "qwen3-max-2026-01-23",
+            "reasoning": false,
+            "input": [
+              "text",
+              "image"
+            ],
+            "contextWindow": 1000000,
+            "maxTokens": "<redacted>"
+          }
+        ]
+      },
+      "openai-codex": {
+        "baseUrl": "https://chatgpt.com/backend-api",
+        "api": "openai-responses",
+        "models": [
+          {
+            "id": "gpt-5.2",
+            "name": "GPT-5.2",
+            "api": "openai-codex-responses",
+            "reasoning": true,
+            "input": [
+              "text",
+              "image"
+            ],
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0
+            },
+            "contextWindow": 1000000,
+            "maxTokens": "<redacted>"
+          },
+          {
+            "id": "gpt-5.3-codex",
+            "name": "GPT-5.3 Codex",
+            "api": "openai-codex-responses",
+            "reasoning": true,
+            "input": [
+              "text",
+              "image"
+            ],
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0
+            },
+            "contextWindow": 1000000,
+            "maxTokens": "<redacted>"
+          },
+          {
+            "id": "gpt-5.4",
+            "name": "GPT-5.4",
+            "api": "openai-codex-responses",
+            "reasoning": true,
+            "input": [
+              "text",
+              "image"
+            ],
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0
+            },
+            "contextWindow": 1000000,
+            "maxTokens": "<redacted>"
+          }
+        ]
+      }
+    }
+  },
+  "agents": {
+    "defaults": {
+      "model": {
+        "primary": "openai-codex/gpt-5.3-codex",
+        "fallbacks": [
+          "openai-codex/gpt-5.4"
+        ]
+      },
+      "models": {
+        "kimi-coding/k2p5": {
+          "alias": "Kimi for Coding"
+        },
+        "honoursoft/claude-opus-4-6-thinking": {
+          "alias": "Claude Opus 4.6",
+          "streaming": false
+        },
+        "openai-codex/gpt-5.4": {
+          "alias": "codex54"
+        },
+        "bailian/qwen3.5-plus": {
+          "alias": "Qwen3.5+"
+        },
+        "bailian/qwen3-max-2026-01-23": {},
+        "openai-codex/gpt-5.2": {
+          "alias": "codex52"
+        },
+        "openai-codex/gpt-5.3-codex": {
+          "alias": "codex53"
+        }
+      },
+      "workspace": "/home/admin/.openclaw/workspace",
+      "userTimezone": "Asia/Shanghai",
+      "timeFormat": "24",
+      "envelopeTimezone": "user",
+      "envelopeTimestamp": "on",
+      "envelopeElapsed": "on",
+      "memorySearch": {
+        "provider": "openai",
+        "remote": {
+          "baseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1/",
+          "apiKey": "<redacted:apiKey>"
+        },
+        "fallback": "local",
+        "model": "text-embedding-v3"
+      },
+      "compaction": {
+        "mode": "safeguard"
+      }
+    },
+    "list": [
+      {
+        "id": "main"
+      },
+      {
+        "id": "kimiwriting",
+        "name": "KellyWriter",
+        "workspace": "/home/admin/.openclaw/workspace-KellyWriter",
+        "agentDir": "/home/admin/.openclaw/agents/kimiwriting/agent",
+        "model": "kimi-coding/k2p5",
+        "skills": [
+          "/home/admin/.openclaw/shared-skills/faster-whisper",
+          "/home/admin/.openclaw/shared-skills/edge-tts",
+          "/home/admin/.openclaw/shared-skills/xiaohongshu-reader"
+        ]
+      },
+      {
+        "id": "kimimanager",
+        "name": "AlfredManager",
+        "workspace": "/home/admin/.openclaw/workspace-AlfredManager",
+        "agentDir": "/home/admin/.openclaw/agents/kimimanager/agent",
+        "model": "bailian/qwen3.5-plus",
+        "skills": [
+          "/home/admin/.openclaw/shared-skills/xiaohongshu-reader"
+        ]
+      },
+      {
+        "id": "bigo",
+        "name": "BigO",
+        "workspace": "/home/admin/.openclaw/workspace-bigo",
+        "agentDir": "/home/admin/.openclaw/agents/bigo/agent",
+        "model": "honoursoft/claude-opus-4-6-thinking",
+        "skills": [
+          "/home/admin/.openclaw/shared-skills/xiaohongshu-reader"
+        ]
+      },
+      {
+        "id": "coderX",
+        "name": "CoderX",
+        "workspace": "/home/admin/.openclaw/workspace-codex",
+        "agentDir": "/home/admin/.openclaw/agents/codex-test/agent",
+        "model": "openai-codex/gpt-5.3-codex",
+        "skills": [
+          "/home/admin/.openclaw/shared-skills/faster-whisper",
+          "/home/admin/.openclaw/shared-skills/edge-tts",
+          "/home/admin/.openclaw/shared-skills/xiaohongshu-reader"
+        ]
+      },
+      {
+        "id": "alicereviewer",
+        "name": "AliceReviewer",
+        "workspace": "/home/admin/.openclaw/workspace-AliceReviewer",
+        "agentDir": "/home/admin/.openclaw/agents/reviewer/agent",
+        "model": "bailian/qwen3.5-plus",
+        "skills": [
+          "/home/admin/.openclaw/shared-skills/writing-context-builder",
+          "/home/admin/.openclaw/shared-skills/writing-core",
+          "/home/admin/.openclaw/shared-skills/t3-writer",
+          "/home/admin/.openclaw/shared-skills/alice-score-reviewer"
+        ]
+      },
+      {
+        "id": "gemwriter",
+        "name": "GeminiWriter",
+        "workspace": "/home/admin/.openclaw/workspace-gemwriter",
+        "agentDir": "/home/admin/.openclaw/agents/gemwriter/agent",
+        "model": "google-gemini-cli/gemini-2.5-pro",
+        "skills": [
+          "/home/admin/.openclaw/shared-skills/faster-whisper",
+          "/home/admin/.openclaw/shared-skills/edge-tts",
+          "/home/admin/.openclaw/shared-skills/xiaohongshu-reader",
+          "/home/admin/.openclaw/workspace-kimiwriting/skills/webnovel-writing-style",
+          "/home/admin/.openclaw/shared-skills/writing-core",
+          "/home/admin/.openclaw/shared-skills/t2-director"
+        ],
+        "memorySearch": {
+          "extraPaths": [
+            "Fictions/规则怪谈之鬼都觉得我不对劲/scripts"
+          ]
+        }
+      },
+      {
+        "id": "rosyreviewer",
+        "name": "RosyReviewer",
+        "workspace": "/home/admin/.openclaw/workspace-RosyReviewer",
+        "agentDir": "/home/admin/.openclaw/agents/rosyreviewer/agent",
+        "model": "openai-codex/gpt-5.2",
+        "skills": [
+          "/home/admin/.openclaw/shared-skills/writing-context-builder",
+          "/home/admin/.openclaw/shared-skills/writing-core",
+          "/home/admin/.openclaw/shared-skills/t1-producer"
+        ]
+      },
+      {
+        "id": "nukelly",
+        "name": "NuKelly",
+        "workspace": "/home/admin/.openclaw/workspace-KimiWriter",
+        "model": "bailian/qwen3.5-plus",
+        "skills": [
+          "/home/admin/.openclaw/shared-skills/writing-context-builder",
+          "/home/admin/.openclaw/shared-skills/writing-core",
+          "/home/admin/.openclaw/shared-skills/t3-writer"
+        ],
+        "agentDir": "/home/admin/.openclaw/agents/nukelly/agent"
+      },
+      {
+        "id": "writinglib",
+        "name": "writinglib",
+        "workspace": "/home/admin/.openclaw/workspace-WritingLib",
+        "agentDir": "/home/admin/.openclaw/agents/writinglib/agent"
+      },
+      {
+        "id": "aristotle",
+        "name": "Aristotle",
+        "workspace": "/home/admin/.openclaw/workspace-Aristotle",
+        "agentDir": "/home/admin/.openclaw/agents/aristotle/agent",
+        "model": "openai-codex/gpt-5.2",
+        "identity": {
+          "name": "亚里士多德",
+          "theme": "思想引擎",
+          "emoji": "🏛️"
+        }
+      }
+    ]
+  },
+  "tools": {
+    "web": {
+      "search": {
+        "enabled": true,
+        "apiKey": "<redacted:apiKey>"
+      },
+      "fetch": {
+        "enabled": true
+      }
+    },
+    "sessions": {
+      "_redacted": "sessions"
+    },
+    "agentToAgent": {
+      "enabled": true
+    }
+  },
+  "bindings": [
+    {
+      "agentId": "kimimanager",
+      "match": {
+        "channel": "telegram",
+        "accountId": "manager"
+      }
+    },
+    {
+      "agentId": "kimiwriting",
+      "match": {
+        "channel": "telegram",
+        "accountId": "writing"
+      }
+    },
+    {
+      "agentId": "bigo",
+      "match": {
+        "channel": "telegram",
+        "accountId": "bigo"
+      }
+    },
+    {
+      "agentId": "coderX",
+      "match": {
+        "channel": "telegram",
+        "accountId": "coder"
+      }
+    },
+    {
+      "agentId": "alicereviewer",
+      "match": {
+        "channel": "telegram",
+        "accountId": "alicereviewer"
+      }
+    },
+    {
+      "agentId": "gemwriter",
+      "match": {
+        "channel": "telegram",
+        "accountId": "gemwriter"
+      }
+    },
+    {
+      "agentId": "rosyreviewer",
+      "match": {
+        "channel": "telegram",
+        "accountId": "rosyreviewer"
+      }
+    },
+    {
+      "agentId": "aristotle",
+      "match": {
+        "channel": "telegram",
+        "accountId": "aristotle"
+      }
+    },
+    {
+      "type": "route",
+      "agentId": "nukelly",
+      "match": {
+        "channel": "telegram",
+        "accountId": "nukelly"
+      }
+    }
+  ],
+  "commands": {
+    "native": "auto",
+    "nativeSkills": "auto",
+    "restart": true,
+    "ownerDisplay": "raw"
+  },
+  "session": {
+    "dmScope": "per-channel-peer"
+  },
+  "channels": {
+    "telegram": {
+      "enabled": true,
+      "dmPolicy": "pairing",
+      "groupPolicy": "allowlist",
+      "streaming": "partial",
+      "accounts": {
+        "manager": {
+          "dmPolicy": "pairing",
+          "botToken": "<redacted:botToken>",
+          "groupPolicy": "allowlist",
+          "streaming": "off"
+        },
+        "writing": {
+          "dmPolicy": "pairing",
+          "botToken": "<redacted:botToken>",
+          "groupPolicy": "allowlist",
+          "streaming": "off"
+        },
+        "bigo": {
+          "dmPolicy": "pairing",
+          "botToken": "<redacted:botToken>",
+          "groupPolicy": "allowlist",
+          "streaming": "off"
+        },
+        "coder": {
+          "dmPolicy": "pairing",
+          "botToken": "<redacted:botToken>",
+          "groupPolicy": "allowlist",
+          "streaming": "off"
+        },
+        "alicereviewer": {
+          "dmPolicy": "pairing",
+          "botToken": "<redacted:botToken>",
+          "groupPolicy": "allowlist",
+          "streaming": "off"
+        },
+        "gemwriter": {
+          "dmPolicy": "pairing",
+          "botToken": "<redacted:botToken>",
+          "groupPolicy": "allowlist",
+          "streaming": "off"
+        },
+        "rosyreviewer": {
+          "dmPolicy": "pairing",
+          "botToken": "<redacted:botToken>",
+          "groupPolicy": "allowlist",
+          "streaming": "off"
+        },
+        "default": {
+          "dmPolicy": "pairing",
+          "groupPolicy": "allowlist",
+          "streaming": "off"
+        },
+        "nukelly": {
+          "dmPolicy": "pairing",
+          "botToken": "<redacted:botToken>",
+          "allowFrom": [
+            "8440855764"
+          ],
+          "groupPolicy": "allowlist",
+          "streaming": "off"
+        },
+        "aristotle": {
+          "dmPolicy": "pairing",
+          "botToken": "<redacted:botToken>",
+          "groupPolicy": "allowlist",
+          "streaming": "off"
+        }
+      }
+    }
+  },
+  "gateway": {
+    "port": 18789,
+    "mode": "local",
+    "bind": "loopback",
+    "auth": {
+      "_redacted": "auth"
+    },
+    "tailscale": {
+      "mode": "off",
+      "resetOnExit": false
+    },
+    "nodes": {
+      "denyCommands": [
+        "camera.snap",
+        "camera.clip",
+        "screen.record",
+        "calendar.add",
+        "contacts.add",
+        "reminders.add"
+      ]
+    }
+  },
+  "plugins": {
+    "load": {
+      "paths": []
+    },
+    "entries": {
+      "telegram": {
+        "enabled": true
+      },
+      "google-gemini-cli-auth": {
+        "_redacted": "google-gemini-cli-auth"
+      }
+    },
+    "installs": {}
+  }
+}

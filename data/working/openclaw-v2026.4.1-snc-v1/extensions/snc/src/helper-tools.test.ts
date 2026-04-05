@@ -23,6 +23,13 @@ function createTempDir(): string {
 function createConfig(overrides: Partial<SncResolvedConfig> = {}): SncResolvedConfig {
   return {
     packetFiles: [],
+    specializationMode: "auto",
+    durableMemory: {
+      maxCatalogEntries: 64,
+      staleEntryDays: 30,
+      projectionLimit: 3,
+      projectionMinimumScore: 3,
+    },
     maxSectionBytes: 24_576,
     hooks: {
       enabled: false,

@@ -7,8 +7,13 @@ import type {
   PluginLogger,
 } from "openclaw/plugin-sdk";
 import { delegateCompactionToRuntime } from "openclaw/plugin-sdk/core";
-import { buildSncSectionTitle, type SncResolvedConfig } from "./config.js";
 import {
+  buildSncSectionTitle,
+  type SncResolvedConfig,
+  type SncSpecializationMode,
+} from "./config.js";
+import {
+  buildSncDurableMemoryDiagnosticsSection,
   buildSncDurableMemorySection,
   harvestSncDurableMemoryEntries,
   loadSncDurableMemoryCatalog,
@@ -21,6 +26,11 @@ import {
   type SncSessionState,
 } from "./session-state.js";
 import { shapeSncTranscriptMessage } from "./transcript-shaping.js";
+import {
+  applySncWorkerLaunchIntent,
+  buildSncWorkerLaunchSection,
+} from "./worker-launch-intent.js";
+import { buildSncWorkerDiagnosticsSection } from "./worker-diagnostics.js";
 import {
   applySncWorkerCompletionEvents,
   buildSncWorkerStateSection,
@@ -38,6 +48,8 @@ type SncContextSection = {
   title: string;
   body: string;
 };
+
+type SncRuntimeFramingMode = Exclude<SncSpecializationMode, "auto">;
 
 type SncTranscriptRewriteRequest = Parameters<
   NonNullable<ContextEngineRuntimeContext["rewriteTranscriptEntries"]>
@@ -77,19 +89,28 @@ function clampUtf8(input: string, maxBytes: number): string {
   return `${input.slice(0, low).trimEnd()}\n\n[truncated by SNC]`;
 }
 
-function buildSystemPromptAddition(sections: SncContextSection[]): string | undefined {
+function buildSystemPromptAddition(
+  sections: SncContextSection[],
+  framingMode: SncRuntimeFramingMode,
+): string | undefined {
   if (sections.length === 0) {
     return undefined;
   }
 
+  const intro =
+    framingMode === "writing"
+      ? "SNC writing context follows. Prefer it when drafting, revising, and maintaining continuity."
+      : "SNC continuity context follows. Use it to preserve active instructions, continuity, and worker results across turns.";
+
   return [
-    "SNC writing context follows. Prefer it when planning, drafting, and maintaining continuity.",
+    intro,
     ...sections.map((section) => `## ${section.title}\n${section.body}`),
   ].join("\n\n");
 }
 
 function buildSncCompactionInstructions(
   state: SncSessionState | null,
+  framingMode: SncRuntimeFramingMode,
   customInstructions?: string,
 ): string | undefined {
   const lines: string[] = [];
@@ -118,7 +139,9 @@ function buildSncCompactionInstructions(
 
   const sncBlock = clampUtf8(
     [
-      "Preserve these SNC writing anchors during compaction.",
+      framingMode === "writing"
+        ? "Preserve these SNC writing anchors during compaction."
+        : "Preserve these SNC continuity anchors during compaction.",
       "Keep them explicit in the resulting summary instead of flattening them into a generic recap.",
       ...lines,
     ].join("\n"),
@@ -126,6 +149,22 @@ function buildSncCompactionInstructions(
   );
 
   return baseInstructions ? `${baseInstructions}\n\n${sncBlock}` : sncBlock;
+}
+
+function hasWritingArtifacts(config: SncResolvedConfig): boolean {
+  return Boolean(
+    config.briefFile ||
+      config.ledgerFile ||
+      config.packetDir ||
+      config.packetFiles.length > 0,
+  );
+}
+
+function resolveSncRuntimeFramingMode(config: SncResolvedConfig): SncRuntimeFramingMode {
+  if (config.specializationMode === "writing" || config.specializationMode === "general") {
+    return config.specializationMode;
+  }
+  return hasWritingArtifacts(config) ? "writing" : "general";
 }
 
 function extractTextContent(content: unknown): string {
@@ -291,6 +330,7 @@ export class SncContextEngine implements ContextEngine {
     model?: string;
     prompt?: string;
   }) {
+    const framingMode = resolveSncRuntimeFramingMode(this.config);
     const sections = await this.loadSections();
     const sessionState = await loadSncSessionState({
       stateDir: this.config.stateDir,
@@ -324,6 +364,26 @@ export class SncContextEngine implements ContextEngine {
       return null;
     });
 
+    const workerLaunchBody = workerState
+      ? buildSncWorkerLaunchSection(workerState, sessionState)
+      : undefined;
+    if (workerLaunchBody) {
+      sections.push({
+        title: "Worker launch lane",
+        body: workerLaunchBody,
+      });
+    }
+
+    const workerDiagnosticsBody = workerState
+      ? buildSncWorkerDiagnosticsSection(workerState)
+      : undefined;
+    if (workerDiagnosticsBody) {
+      sections.push({
+        title: "Worker diagnostics",
+        body: workerDiagnosticsBody,
+      });
+    }
+
     const workerStateBody = workerState ? buildSncWorkerStateSection(workerState) : undefined;
     if (workerStateBody) {
       sections.push({
@@ -348,6 +408,8 @@ export class SncContextEngine implements ContextEngine {
           currentText: extractDurableMemoryCurrentText(params.messages),
           currentFocus: sessionState?.chapterState.focus,
           currentConstraints: sessionState?.chapterState.constraints,
+          limit: this.config.durableMemory.projectionLimit,
+          minimumScore: this.config.durableMemory.projectionMinimumScore,
         })
       : undefined;
     if (durableMemoryBody) {
@@ -357,11 +419,30 @@ export class SncContextEngine implements ContextEngine {
       });
     }
 
+    const durableMemoryDiagnosticsBody = durableCatalog
+      ? buildSncDurableMemoryDiagnosticsSection({
+          entries: durableCatalog,
+          currentText: extractDurableMemoryCurrentText(params.messages),
+          currentFocus: sessionState?.chapterState.focus,
+          currentConstraints: sessionState?.chapterState.constraints,
+          limit: this.config.durableMemory.projectionLimit,
+          minimumScore: this.config.durableMemory.projectionMinimumScore,
+          now: durableCatalog.updatedAt,
+          staleEntryDays: this.config.durableMemory.staleEntryDays,
+        })
+      : undefined;
+    if (durableMemoryDiagnosticsBody) {
+      sections.push({
+        title: "Durable memory diagnostics",
+        body: durableMemoryDiagnosticsBody,
+      });
+    }
+
     return {
       messages: params.messages,
       estimatedTokens: 0,
       ...(sections.length > 0
-        ? { systemPromptAddition: buildSystemPromptAddition(sections) }
+        ? { systemPromptAddition: buildSystemPromptAddition(sections, framingMode) }
         : {}),
     };
   }
@@ -396,8 +477,9 @@ export class SncContextEngine implements ContextEngine {
       return;
     }
 
+    let workerState = null;
     try {
-      await applySncWorkerCompletionEvents({
+      workerState = await applySncWorkerCompletionEvents({
         stateDir: this.config.stateDir,
         sessionId: params.sessionId,
         sessionKey: params.sessionKey,
@@ -409,6 +491,24 @@ export class SncContextEngine implements ContextEngine {
         `worker-write:${params.sessionId}`,
         `SNC worker state write failed for ${params.sessionId} (${String(error)})`,
       );
+    }
+
+    if (persistedState) {
+      try {
+        workerState = await applySncWorkerLaunchIntent({
+          stateDir: this.config.stateDir,
+          sessionId: params.sessionId,
+          sessionKey: params.sessionKey,
+          sessionState: persistedState,
+          existingState: workerState,
+          now: persistedState.updatedAt,
+        });
+      } catch (error) {
+        this.warnOnce(
+          `worker-launch-write:${params.sessionId}`,
+          `SNC worker launch intent write failed for ${params.sessionId} (${String(error)})`,
+        );
+      }
     }
 
     const harvestedEntries = persistedState
@@ -429,6 +529,8 @@ export class SncContextEngine implements ContextEngine {
         stateDir: this.config.stateDir,
         entries: harvestedEntries,
         now: persistedState?.updatedAt,
+        maxCatalogEntries: this.config.durableMemory.maxCatalogEntries,
+        staleEntryDays: this.config.durableMemory.staleEntryDays,
       });
     } catch (error) {
       this.warnOnce(
@@ -492,6 +594,7 @@ export class SncContextEngine implements ContextEngine {
     customInstructions?: string;
     runtimeContext?: ContextEngineRuntimeContext;
   }) {
+    const framingMode = resolveSncRuntimeFramingMode(this.config);
     const sessionState = await loadSncSessionState({
       stateDir: this.config.stateDir,
       sessionId: params.sessionId,
@@ -506,6 +609,7 @@ export class SncContextEngine implements ContextEngine {
 
     const customInstructions = buildSncCompactionInstructions(
       sessionState,
+      framingMode,
       params.customInstructions,
     );
 

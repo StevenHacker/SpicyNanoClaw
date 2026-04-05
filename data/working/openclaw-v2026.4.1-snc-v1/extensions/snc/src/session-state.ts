@@ -35,6 +35,11 @@ const USER_DIRECTIVE_FALLBACK_PATTERNS = [
   /(请|帮我|务必|尽量|不要|避免|保持|继续|修改|重写|补充|总结|整理|列出|确认|对齐|采用|切换|保留|优化)/,
   /\b(please|help me|must|should|need to|keep|avoid|continue|revise|rewrite|draft|update|change|improve)\b/i,
 ];
+const INTERNAL_RUNTIME_EVENT_PATTERNS = [
+  /\[Internal task completion event\]/i,
+  /<<<BEGIN_UNTRUSTED_CHILD_RESULT>>>/i,
+  /\bOpenClaw runtime context \(internal\):/i,
+];
 
 type SncSegment = {
   source: "user" | "assistant";
@@ -205,6 +210,10 @@ function hasAnyMatch(text: string, patterns: RegExp[]): boolean {
   return patterns.some((pattern) => pattern.test(text));
 }
 
+function isInternalRuntimeEventText(text: string): boolean {
+  return INTERNAL_RUNTIME_EVENT_PATTERNS.some((pattern) => pattern.test(text));
+}
+
 function splitIntoSegments(text: string): string[] {
   const segments: string[] = [];
   const lines = text
@@ -275,6 +284,10 @@ function toStateMessage(message: AgentMessage): SncStateMessage | undefined {
 
   const text = extractMessageText(message);
   if (!text) {
+    return undefined;
+  }
+
+  if (role === "assistant" && isInternalRuntimeEventText(text)) {
     return undefined;
   }
 
@@ -631,12 +644,12 @@ export function buildSncSessionStateSection(state: SncSessionState): string | un
   }
 
   if (hasStructuredState) {
-    lines.push("", "Story ledger:");
+    lines.push("", "Continuity ledger:");
     appendSection(lines, "User directives:", state.storyLedger.userDirectives);
     appendSection(lines, "Assistant plans:", state.storyLedger.assistantPlans);
     appendSection(lines, "Continuity notes:", state.storyLedger.continuityNotes);
 
-    lines.push("", "Chapter state:");
+    lines.push("", "Active state:");
     if (state.chapterState.focus) {
       lines.push(`- focus: ${state.chapterState.focus}`);
     }
