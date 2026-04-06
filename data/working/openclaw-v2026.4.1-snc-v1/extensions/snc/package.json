@@ -1,6 +1,6 @@
 {
   "name": "openclaw-snc",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "SpicyNanoClaw context engine plugin for OpenClaw",
   "type": "module",
   "devDependencies": {

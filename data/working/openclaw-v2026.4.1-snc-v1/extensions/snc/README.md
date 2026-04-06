@@ -11,7 +11,7 @@ It is also designed not to fight ordinary OpenClaw assistant work. When you do n
 If you already have the release-candidate package:
 
 ```bash
-openclaw plugins install ./openclaw-snc-0.1.0.tgz
+openclaw plugins install ./openclaw-snc-0.1.1.tgz
 ```
 
 Then enable it:
@@ -21,6 +21,11 @@ plugins.slots.contextEngine = "snc"
 ```
 
 That is the shortest path to a working SNC session.
+
+Important:
+
+- plugin config must live under `plugins.entries.snc.config`
+- if you put `briefFile`, `ledgerFile`, `packetDir`, or `stateDir` anywhere else, SNC will not see them
 
 If you want to control how strongly SNC leans into writing-specific framing, use:
 
@@ -107,7 +112,7 @@ hooks: {
 Release-candidate package:
 
 ```bash
-openclaw plugins install ./openclaw-snc-0.1.0.tgz
+openclaw plugins install ./openclaw-snc-0.1.1.tgz
 ```
 
 Local linked source inside an OpenClaw workspace:
@@ -212,3 +217,14 @@ The clean-host gate checks:
 - packaged install into a clean OpenClaw host mirror
 - recommended base config write + schema validation
 - `plugins inspect` / `plugins list` verification for the installed SNC package
+
+These PowerShell scripts are repository-only engineering helpers.
+They are not bundled into the installed plugin package itself.
+
+If you are validating SNC after installation in a normal OpenClaw host, use:
+
+```bash
+openclaw config validate --json
+openclaw plugins inspect snc --json
+openclaw plugins doctor
+```

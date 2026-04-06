@@ -15,7 +15,7 @@ Host baseline:
 If you downloaded or cloned this repo, the shortest try-today install is:
 
 ```bash
-openclaw plugins install ./data/releases/snc/openclaw-snc-0.1.0.tgz
+openclaw plugins install ./data/releases/snc/openclaw-snc-0.1.1.tgz
 ```
 
 Then enable SNC:
@@ -161,6 +161,9 @@ This is a bounded specialization layer with a writing advantage, not a replaceme
 
 ## Validation
 
+These validation scripts live in the engineering repository.
+They are not shipped inside the installed plugin package.
+
 The current milestone gate is:
 
 ```powershell
@@ -186,9 +189,17 @@ Milestone 2 gate checks:
 - package artifact build
 - clean-host install rehearsal against a real host mirror
 
+If you are validating an already installed plugin outside this repository, use normal host commands instead:
+
+```bash
+openclaw config validate --json
+openclaw plugins inspect snc --json
+openclaw plugins doctor
+```
+
 ## Repo Pointers
 
 If you are here as an OpenClaw user, these are the two useful paths:
 
-- installable package: [`data/releases/snc/openclaw-snc-0.1.0.tgz`](./data/releases/snc/openclaw-snc-0.1.0.tgz)
+- installable package: [`data/releases/snc/openclaw-snc-0.1.1.tgz`](./data/releases/snc/openclaw-snc-0.1.1.tgz)
 - plugin source: [`data/working/openclaw-v2026.4.1-snc-v1/extensions/snc`](./data/working/openclaw-v2026.4.1-snc-v1/extensions/snc)
