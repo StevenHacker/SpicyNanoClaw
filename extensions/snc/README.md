@@ -2,6 +2,10 @@
 
 `snc` is a writing-oriented OpenClaw context-engine plugin.
 
+Current development summary and next-step direction:
+
+- `docs/snc/2026-04-07-closeout.md`
+
 Current scope:
 
 - installs as a normal OpenClaw plugin
