@@ -50,6 +50,7 @@ export type SncPluginConfig = {
   packetFiles?: string[];
   packetDir?: string;
   stateDir?: string;
+  memoryNamespace?: string;
   specializationMode?: SncSpecializationMode;
   durableMemory?: SncPluginDurableMemoryConfig;
   maxSectionBytes?: number;
@@ -70,6 +71,7 @@ export type SncResolvedConfig = {
   packetFiles: string[];
   packetDir?: string;
   stateDir?: string;
+  memoryNamespace?: string;
   specializationMode: SncSpecializationMode;
   durableMemory: {
     maxCatalogEntries: number;
@@ -251,6 +253,7 @@ export function resolveSncPluginConfig(
     packetFiles: resolvePathList(raw.packetFiles, resolvePath),
     packetDir: resolveOptionalPath(raw.packetDir, resolvePath),
     stateDir: resolveOptionalPath(raw.stateDir, resolvePath),
+    memoryNamespace: normalizeString(raw.memoryNamespace),
     specializationMode: resolveSpecializationMode(raw.specializationMode),
     durableMemory: resolveDurableMemoryConfig(raw.durableMemory),
     maxSectionBytes:

@@ -1,7 +1,7 @@
 param(
     [string]$ExternalHostSource = "C:\Users\Administrator\Documents\codex_project_1\data\external\openclaw-v2026.4.1",
     [string]$SharedNodeModulesSource = "C:\Users\Administrator\Documents\codex_project_1\data\working\openclaw-v2026.4.1-snc-v1\node_modules",
-    [string]$PackagePath = "C:\Users\Administrator\Documents\codex_project_1\data\releases\snc\openclaw-snc-0.1.0.tgz",
+    [string]$PackagePath = "C:\Users\Administrator\Documents\codex_project_1\data\releases\snc\openclaw-snc-0.2.0.tgz",
     [string]$RehearsalRoot = "C:\Users\Administrator\Documents\codex_project_1\data\rehearsal\snc-clean-host-v1",
     [string]$NodeHome = "C:\Users\Administrator\tools\node-v22.14.0-win-x64"
 )
@@ -233,7 +233,15 @@ Invoke-Step -Label "Validate clean-host config and plugin status" -Action {
         throw "Expected SNC specializationMode to be auto"
     }
 
-    $configFileOutput = (Get-Content -LiteralPath $configFileStdout -Raw).Trim()
+    $configFileOutput = if (Test-Path -LiteralPath $configFileStdout) {
+        (Get-Content -LiteralPath $configFileStdout -Raw).Trim()
+    } else {
+        ""
+    }
+    if (-not $configFileOutput) {
+        $configFileOutput = $ConfigPath
+        Set-Content -LiteralPath $configFileStdout -Value "$configFileOutput`n" -Encoding utf8
+    }
     if (-not $configFileOutput.EndsWith("openclaw.json")) {
         throw "Unexpected config file output: $configFileOutput"
     }

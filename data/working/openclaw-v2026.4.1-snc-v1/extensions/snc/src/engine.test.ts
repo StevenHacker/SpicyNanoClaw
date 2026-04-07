@@ -16,9 +16,11 @@ import { delegateCompactionToRuntime } from "openclaw/plugin-sdk/core";
 import {
   loadSncDurableMemoryCatalog,
   persistSncDurableMemoryStore,
+  resolveSncDurableMemoryNamespace,
 } from "./durable-memory.js";
 import { SncContextEngine } from "./engine.js";
 import type { SncResolvedConfig } from "./config.js";
+import { persistSncSessionState } from "./session-state.js";
 import { applySncWorkerLaunchResult, prepareSncWorkerLaunch } from "./worker-execution.js";
 import {
   buildSncWorkerJobContract,
@@ -176,19 +178,223 @@ describe("SncContextEngine", () => {
     expect(assembled.systemPromptAddition).toContain("Project brief");
     expect(assembled.systemPromptAddition).toContain("## scene");
     expect(assembled.systemPromptAddition).toContain("Scene packet");
+    expect(assembled.systemPromptAddition).toContain("## Writing output discipline");
+    expect(assembled.systemPromptAddition).toContain("Current turn looks like direct drafting.");
     expect(assembled.systemPromptAddition).toContain("## Session snapshot");
-    expect(assembled.systemPromptAddition).toContain("Continuity ledger:");
-    expect(assembled.systemPromptAddition).toContain("Active state:");
+    expect(assembled.systemPromptAddition).toContain("Writing-draft mode:");
+    expect(assembled.systemPromptAddition).toContain("Active draft state:");
     expect(assembled.systemPromptAddition).toContain(
       "latestUserDirective: Please continue chapter one, keep a noir tone, and avoid exposition.",
     );
     expect(assembled.systemPromptAddition).toContain(
-      "latestAssistantPlan: Next I will draft the opening scene and maintain continuity with the missing-ring clue.",
+      "secondaryAssistantCue: Next I will draft the opening scene and maintain continuity with the missing-ring clue.",
     );
     expect(assembled.systemPromptAddition).toContain(
       "Please continue chapter one, keep a noir tone, and avoid exposition.",
     );
     expect(assembled.systemPromptAddition).toContain("kept latest beats");
+  });
+
+  it("shrinks packet-dir residue before critical SNC sections under prompt pressure", async () => {
+    const root = createTempDir();
+    const briefFile = path.join(root, "brief.md");
+    const packetDir = path.join(root, "packets");
+    const stateDir = path.join(root, ".snc-state");
+
+    mkdirSync(packetDir, { recursive: true });
+    writeFileSync(briefFile, "Project brief", "utf8");
+    writeFileSync(path.join(packetDir, "packet-a.md"), "A ".repeat(280), "utf8");
+    writeFileSync(path.join(packetDir, "packet-b.md"), "B ".repeat(280), "utf8");
+    writeFileSync(path.join(packetDir, "packet-c.md"), "C ".repeat(280), "utf8");
+
+    const engine = new SncContextEngine(
+      createConfig({
+        briefFile,
+        packetDir,
+        stateDir,
+        maxSectionBytes: 2_400,
+      }),
+      {
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+      },
+    );
+
+    await engine.afterTurn({
+      sessionId: "session-budget-1",
+      sessionKey: "agent:main:story",
+      sessionFile: path.join(root, "session-budget.jsonl"),
+      messages: [
+        message("user", "Read brief.md and packet-c.md, then list the two highest-priority continuity risks.", 1),
+        message(
+          "assistant",
+          "Next I will inspect the materials, preserve the chapter clues, and report the top continuity risks.",
+          2,
+        ),
+      ],
+      prePromptMessageCount: 0,
+    });
+
+    const assembled = await engine.assemble({
+      sessionId: "session-budget-1",
+      sessionKey: "agent:main:story",
+      messages: [
+        message("user", "Read brief.md and packet-c.md, then list the two highest-priority continuity risks.", 3),
+      ],
+    });
+
+    expect(assembled.systemPromptAddition).toContain("## brief");
+    expect(assembled.systemPromptAddition).toContain("## Task posture");
+    expect(assembled.systemPromptAddition).toContain("## Current-task support");
+    expect(assembled.systemPromptAddition).toContain("## SNC budget notes");
+    expect(assembled.systemPromptAddition).not.toContain("## packet c");
+    expect(assembled.systemPromptAddition).not.toContain("## Historical continuity support");
+  });
+
+  it("does not force prose-draft posture when the user explicitly asks for an outline", async () => {
+    const root = createTempDir();
+    const briefFile = path.join(root, "brief.md");
+    const stateDir = path.join(root, ".snc-state");
+
+    writeFileSync(briefFile, "Project brief", "utf8");
+
+    const engine = new SncContextEngine(
+      createConfig({
+        briefFile,
+        stateDir,
+      }),
+      {
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+      },
+    );
+
+    await engine.afterTurn({
+      sessionId: "session-outline-1",
+      sessionKey: "agent:main:story",
+      sessionFile: path.join(root, "session-outline.jsonl"),
+      messages: [
+        message("user", "Outline chapter two as six beats before drafting.", 1),
+        message(
+          "assistant",
+          "Next I will outline the six beats before drafting the prose scene.",
+          2,
+        ),
+      ],
+      prePromptMessageCount: 0,
+    });
+
+    const assembled = await engine.assemble({
+      sessionId: "session-outline-1",
+      sessionKey: "agent:main:story",
+      messages: [],
+    });
+
+    expect(assembled.systemPromptAddition).toContain("SNC writing context follows.");
+    expect(assembled.systemPromptAddition).not.toContain("## Writing output discipline");
+    expect(assembled.systemPromptAddition).toContain("Continuity ledger:");
+    expect(assembled.systemPromptAddition).toContain("latestAssistantPlan:");
+  });
+
+  it("drops stale evidence-first posture when the current turn returns to direct drafting", async () => {
+    const root = createTempDir();
+    const briefFile = path.join(root, "brief.md");
+    const stateDir = path.join(root, ".snc-state");
+
+    writeFileSync(briefFile, "Project brief", "utf8");
+
+    const engine = new SncContextEngine(
+      createConfig({
+        briefFile,
+        stateDir,
+      }),
+      {
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+      },
+    );
+
+    await engine.afterTurn({
+      sessionId: "session-evidence-history-1",
+      sessionKey: "agent:main:story",
+      sessionFile: path.join(root, "session-evidence-history.jsonl"),
+      messages: [
+        message(
+          "user",
+          "Read brief.md and ledger.md, then list the top four continuity risks according to those files only.",
+          1,
+        ),
+        message("assistant", "I will inspect the materials before answering.", 2),
+      ],
+      prePromptMessageCount: 0,
+    });
+
+    const assembled = await engine.assemble({
+      sessionId: "session-evidence-history-1",
+      sessionKey: "agent:main:story",
+      messages: [
+        message(
+          "user",
+          "Continue chapter four and write the confrontation scene directly in prose.",
+          3,
+        ),
+      ],
+    });
+
+    expect(assembled.systemPromptAddition).toContain("SNC writing context follows.");
+    expect(assembled.systemPromptAddition).toContain("## Writing output discipline");
+    expect(assembled.systemPromptAddition).not.toContain("SNC evidence-grounding context follows.");
+  });
+
+  it("keeps report-style assistant residue out of writing-draft prompt surfaces", async () => {
+    const root = createTempDir();
+    const briefFile = path.join(root, "brief.md");
+    const stateDir = path.join(root, ".snc-state");
+
+    writeFileSync(briefFile, "Project brief", "utf8");
+
+    const engine = new SncContextEngine(
+      createConfig({
+        briefFile,
+        stateDir,
+      }),
+      {
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+      },
+    );
+
+    await engine.afterTurn({
+      sessionId: "session-writing-report-1",
+      sessionKey: "agent:main:story",
+      sessionFile: path.join(root, "session-writing-report.jsonl"),
+      messages: [
+        message("user", "Continue the confrontation scene directly in prose and keep the ring clue visible.", 1),
+        message(
+          "assistant",
+          "Completed the anchor checklist and aligned the reveal timing.",
+          2,
+        ),
+      ],
+      prePromptMessageCount: 0,
+    });
+
+    const assembled = await engine.assemble({
+      sessionId: "session-writing-report-1",
+      sessionKey: "agent:main:story",
+      messages: [
+        message("user", "Continue the confrontation scene directly in prose and keep the ring clue visible.", 3),
+      ],
+    });
+
+    expect(assembled.systemPromptAddition).toContain("## Writing output discipline");
+    expect(assembled.systemPromptAddition).toContain("Do not slip into status-report");
+    expect(assembled.systemPromptAddition).not.toContain("secondaryAssistantCue:");
+    expect(assembled.systemPromptAddition).not.toContain("Completed the anchor checklist");
   });
 
   it("warns once and skips missing files", async () => {
@@ -394,6 +600,107 @@ describe("SncContextEngine", () => {
     expect(params?.customInstructions).not.toContain("Preserve these SNC writing anchors during compaction.");
   });
 
+  it("switches to evidence-grounding posture for explicit read requests", async () => {
+    const root = createTempDir();
+    const stateDir = path.join(root, ".snc-state");
+    const engine = new SncContextEngine(
+      createConfig({
+        stateDir,
+      }),
+      {
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+      },
+    );
+
+    await engine.afterTurn({
+      sessionId: "session-evidence-1",
+      sessionKey: "agent:main:ops",
+      sessionFile: path.join(root, "session-evidence.jsonl"),
+      messages: [
+        message("user", "Keep the timeline consistent and remember the CFO update deadline.", 1),
+        message(
+          "assistant",
+          "Next I will keep the continuity aligned and preserve the pending CFO handoff.",
+          2,
+        ),
+      ],
+      prePromptMessageCount: 0,
+    });
+
+    const assembled = await engine.assemble({
+      sessionId: "session-evidence-1",
+      sessionKey: "agent:main:ops",
+      messages: [
+        message(
+          "user",
+          "Read brief.md and ledger.md, then list today's top four priorities according to those files only.",
+          3,
+        ),
+      ],
+    });
+
+    expect(assembled.systemPromptAddition).toContain("SNC evidence-grounding context follows.");
+    expect(assembled.systemPromptAddition).toContain("## Task posture");
+    expect(assembled.systemPromptAddition).toContain("Current turn reads as evidence-first.");
+    expect(assembled.systemPromptAddition).toContain("## Current-task support");
+    expect(assembled.systemPromptAddition).toContain("Evidence-grounding mode:");
+    expect(assembled.systemPromptAddition).toContain("Current-turn support:");
+    expect(assembled.systemPromptAddition).toContain("## Historical continuity support");
+    expect(assembled.systemPromptAddition).not.toContain("Assistant plans:");
+    expect(assembled.systemPromptAddition).not.toContain("latestAssistantPlan:");
+    expect(assembled.systemPromptAddition).toContain("Secondary continuity cues:");
+  });
+
+  it("keeps historical continuity support alive when total prompt budget can still fit it", async () => {
+    const root = createTempDir();
+    const stateDir = path.join(root, ".snc-state");
+    const engine = new SncContextEngine(
+      createConfig({
+        stateDir,
+        maxSectionBytes: 4_096,
+      }),
+      {
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+      },
+    );
+
+    const cueA = `Keep continuity with archive clue ${"alpha ".repeat(42)}tail-marker-a`;
+    const cueB = `Preserve continuity with ferry clue ${"beta ".repeat(42)}tail-marker-b`;
+
+    await persistSncSessionState({
+      stateDir,
+      sessionId: "session-evidence-budget-1",
+      sessionKey: "agent:main:ops",
+      messages: [
+        message("user", cueA, 1),
+        message("assistant", `Next I will ${cueB}`, 2),
+      ],
+      prePromptMessageCount: 0,
+      autoCompactionSummary: "Keep continuity support secondary and honest.",
+    });
+
+    const assembled = await engine.assemble({
+      sessionId: "session-evidence-budget-1",
+      sessionKey: "agent:main:ops",
+      messages: [
+        message(
+          "user",
+          "Read brief.md and list the currently supported priorities from the materials only.",
+          3,
+        ),
+      ],
+    });
+
+    expect(assembled.systemPromptAddition).toContain("## Historical continuity support");
+    expect(assembled.systemPromptAddition).toContain("tail-marker-b");
+    expect(assembled.systemPromptAddition).not.toContain("## Durable memory diagnostics");
+    expect(assembled.systemPromptAddition).not.toContain("[truncated by SNC]");
+  });
+
   it("harvests durable memory after turn finalization and projects it during assemble", async () => {
     const root = createTempDir();
     const stateDir = path.join(root, ".snc-state");
@@ -428,7 +735,11 @@ describe("SncContextEngine", () => {
       autoCompactionSummary: "Preserve the ring clue and the chapter three payoff.",
     });
 
-    const catalog = await loadSncDurableMemoryCatalog({ stateDir });
+    const namespace = resolveSncDurableMemoryNamespace({
+      sessionId: "session-durable-1",
+      sessionKey: "agent:main:story",
+    });
+    const catalog = await loadSncDurableMemoryCatalog({ stateDir, namespace });
     expect(catalog?.entries.length).toBeGreaterThan(0);
     expect(catalog?.entries.map((entry) => entry.category)).toEqual(
       expect.arrayContaining(["directive", "constraint", "continuity"]),
@@ -451,6 +762,58 @@ describe("SncContextEngine", () => {
     expect(assembled.systemPromptAddition).toContain("Please keep the noir tone and first-person POV while chapter three stays centered on the missing-ring clue.");
     expect(assembled.systemPromptAddition).toContain("missing-ring clue");
     expect(assembled.systemPromptAddition).toContain("Preserve the ring clue and the chapter three payoff.");
+  });
+
+  it("keeps durable memory isolated across agent families by default", async () => {
+    const root = createTempDir();
+    const stateDir = path.join(root, ".snc-state");
+    const engine = new SncContextEngine(
+      createConfig({
+        stateDir,
+      }),
+      {
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+      },
+    );
+
+    await engine.afterTurn({
+      sessionId: "session-durable-writer",
+      sessionKey: "agent:writer:story",
+      sessionFile: path.join(root, "session-durable-writer.jsonl"),
+      messages: [
+        message(
+          "user",
+          "Please keep the noir tone and first-person POV while chapter three stays centered on the missing-ring clue.",
+          1,
+        ),
+        message(
+          "assistant",
+          "I will keep the noir tone, first-person POV, and the missing-ring clue centered in chapter three.",
+          2,
+        ),
+      ],
+      prePromptMessageCount: 0,
+      autoCompactionSummary: "Preserve the ring clue and the chapter three payoff.",
+    });
+
+    const assembled = await engine.assemble({
+      sessionId: "session-durable-reviewer",
+      sessionKey: "agent:reviewer:story",
+      messages: [
+        message(
+          "user",
+          "Please keep the noir tone and first-person POV while chapter three stays centered on the missing-ring clue.",
+          3,
+        ),
+      ],
+    });
+
+    expect(assembled.systemPromptAddition ?? "").not.toContain("## Durable memory");
+    expect(assembled.systemPromptAddition ?? "").not.toContain(
+      "Preserve the ring clue and the chapter three payoff.",
+    );
   });
 
   it("projects durable-memory diagnostics when pruning pressure or projection saturation appears", async () => {
@@ -528,6 +891,8 @@ describe("SncContextEngine", () => {
     expect(assembled.systemPromptAddition).toContain("## Durable memory diagnostics");
     expect(assembled.systemPromptAddition).toContain("Weak single-signal entries:");
     expect(assembled.systemPromptAddition).toContain("Projection is saturated at limit 1;");
+    expect(assembled.systemPromptAddition).toContain("Projected cue reasons:");
+    expect(assembled.systemPromptAddition).toContain("Held back by limit:");
   });
 
   it("folds worker completion events into persisted worker state and projects them during assemble", async () => {
@@ -610,6 +975,76 @@ describe("SncContextEngine", () => {
       "[complete] Check chapter pressure: completed successfully.",
     );
     expect(assembled.systemPromptAddition).toContain("action: accept result");
+  });
+
+  it("suppresses transient operational durable entries during assemble projection", async () => {
+    const root = createTempDir();
+    const stateDir = path.join(root, ".snc-state");
+    const engine = new SncContextEngine(
+      createConfig({
+        stateDir,
+      }),
+      {
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+      },
+    );
+
+    const namespace = resolveSncDurableMemoryNamespace({
+      sessionId: "session-memory-quality-1",
+      sessionKey: "agent:main:general",
+    });
+
+    await persistSncDurableMemoryStore({
+      stateDir,
+      namespace,
+      entries: [
+        {
+          version: 1,
+          id: "dm-stable-style",
+          category: "directive",
+          text: "Keep naming consistent across the project.",
+          tags: ["directive"],
+          strength: "explicit-user",
+          firstCapturedAt: "2026-04-05T00:00:00.000Z",
+          lastConfirmedAt: "2026-04-05T00:00:00.000Z",
+          confirmationCount: 1,
+          evidence: [{ sessionId: "session-old", source: "story-ledger" }],
+        },
+        {
+          version: 1,
+          id: "dm-transient-op",
+          category: "directive",
+          text: "Read brief.md and list today's top four priorities.",
+          tags: ["directive"],
+          strength: "explicit-user",
+          firstCapturedAt: "2026-04-05T00:00:00.000Z",
+          lastConfirmedAt: "2026-04-05T00:00:00.000Z",
+          confirmationCount: 1,
+          evidence: [{ sessionId: "session-old", source: "story-ledger" }],
+        },
+      ],
+      now: "2026-04-05T00:00:00.000Z",
+    });
+
+    const assembled = await engine.assemble({
+      sessionId: "session-memory-quality-1",
+      sessionKey: "agent:main:general",
+      messages: [
+        message(
+          "user",
+          "Keep naming consistent across the project while you review the current branch.",
+          1,
+        ),
+      ],
+    });
+
+    expect(assembled.systemPromptAddition).toContain("## Durable memory");
+    expect(assembled.systemPromptAddition).toContain("Keep naming consistent across the project.");
+    expect(assembled.systemPromptAddition).not.toContain(
+      "Read brief.md and list today's top four priorities.",
+    );
   });
 
   it("queues a bounded helper launch after turn and projects a launch lane during assemble", async () => {

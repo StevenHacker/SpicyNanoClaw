@@ -4,6 +4,8 @@ import path from "node:path";
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  buildSncEvidenceCurrentSupportSection,
+  buildSncEvidenceHistoricalSupportSection,
   buildSncSessionStateSection,
   loadSncSessionState,
   persistSncSessionState,
@@ -124,6 +126,25 @@ describe("snc session state", () => {
     expect(saved?.chapterState.constraints).toEqual([]);
   });
 
+  it("dedupes mixed-width directives through Unicode normalization", async () => {
+    const stateDir = createStateDir();
+
+    const saved = await persistSncSessionState({
+      stateDir,
+      sessionId: "session-width-1",
+      sessionKey: "agent:main:story",
+      messages: [
+        message("user", "Please keep the term AI系统 consistent across the chapter.", 1),
+        message("user", "Please keep the term ＡＩ系统 consistent across the chapter.", 2),
+      ],
+      prePromptMessageCount: 0,
+    });
+
+    expect(saved?.storyLedger.userDirectives).toHaveLength(1);
+    expect(saved?.chapterState.latestUserDirective).toContain("AI系统");
+    expect(saved?.chapterState.constraints).toHaveLength(1);
+  });
+
   it("does not let internal completion-event messages pollute persisted continuity state", async () => {
     const stateDir = createStateDir();
 
@@ -221,5 +242,226 @@ describe("snc session state", () => {
     expect(text).toContain("  - Keep first-person POV");
     expect(text).toContain("- USER: Outline the conflict");
     expect(text).toContain("- ASSISTANT: Conflict outlined");
+  });
+
+  it("demotes assistant-plan truth in evidence-grounding mode", () => {
+    const text = buildSncSessionStateSection(
+      {
+        version: 2,
+        sessionId: "session-evidence-1",
+        sessionKey: "agent:main:ops",
+        updatedAt: "2026-04-03T10:00:00.000Z",
+        turnCount: 3,
+        storyLedger: {
+          userDirectives: ["Read brief.md and ledger.md"],
+          assistantPlans: ["Inspect the materials first"],
+          continuityNotes: ["Keep the CFO deadline visible"],
+          events: [],
+        },
+        chapterState: {
+          focus: "Inspect source materials",
+          latestUserDirective: "Read brief.md and ledger.md",
+          latestAssistantPlan: "Inspect the materials first",
+          constraints: ["List only what the files support"],
+        },
+        recentMessages: [
+          { role: "user", text: "Read brief.md and ledger.md" },
+          { role: "assistant", text: "I will inspect the files first" },
+        ],
+      },
+      { mode: "evidence-grounding" },
+    );
+
+    expect(text).toContain("Evidence-grounding mode:");
+    expect(text).not.toContain("latestAssistantPlan:");
+    expect(text).toContain("Secondary continuity cues:");
+    expect(text).toContain("- Inspect the materials first");
+  });
+
+  it("keeps legitimate report-style continuity cues in evidence historical support", () => {
+    const text = buildSncEvidenceHistoricalSupportSection({
+      version: 2,
+      sessionId: "session-evidence-history-2",
+      sessionKey: "agent:main:ops",
+      updatedAt: "2026-04-03T10:00:00.000Z",
+      turnCount: 3,
+      storyLedger: {
+        userDirectives: ["Read brief.md and verify the ring clue state"],
+        assistantPlans: ["Verified the missing-ring clue remains visible in chapter three."],
+        continuityNotes: ["Verified the missing-ring clue remains visible in chapter three."],
+        events: [],
+      },
+      chapterState: {
+        focus: "Verify the ring clue state",
+        latestUserDirective: "Read brief.md and verify the ring clue state",
+        latestAssistantPlan: "Verified the missing-ring clue remains visible in chapter three.",
+        constraints: ["List only what the current files support"],
+      },
+      recentMessages: [
+        { role: "user", text: "Read brief.md and verify the ring clue state" },
+        {
+          role: "assistant",
+          text: "Verified the missing-ring clue remains visible in chapter three.",
+        },
+      ],
+    });
+
+    expect(text).toContain("Secondary continuity cues:");
+    expect(text).toContain("Verified the missing-ring clue remains visible in chapter three.");
+  });
+
+  it("builds a split current-support section for evidence-grounding mode", () => {
+    const text = buildSncEvidenceCurrentSupportSection({
+      version: 2,
+      sessionId: "session-evidence-current-1",
+      sessionKey: "agent:main:ops",
+      updatedAt: "2026-04-03T10:00:00.000Z",
+      turnCount: 4,
+      autoCompactionSummary: "older summary",
+      storyLedger: {
+        userDirectives: [
+          "Old directive: keep the previous shortlist unchanged",
+          "Read brief.md and list the top priorities",
+        ],
+        assistantPlans: ["Inspect the files before answering"],
+        continuityNotes: ["Keep the CFO deadline visible"],
+        events: [],
+      },
+      chapterState: {
+        focus: "Read the current materials",
+        latestUserDirective: "Read brief.md and list the top priorities",
+        latestAssistantPlan: "Inspect the files before answering",
+        constraints: ["Do not imply coverage you do not have"],
+      },
+      recentMessages: [
+        { role: "user", text: "Old directive: keep the previous shortlist unchanged" },
+        { role: "assistant", text: "I kept the previous shortlist unchanged" },
+        { role: "user", text: "Read brief.md and list the top priorities" },
+        { role: "assistant", text: "I will inspect the file first" },
+      ],
+    });
+
+    expect(text).toContain("Evidence-grounding mode:");
+    expect(text).toContain("Current-turn support:");
+    expect(text).toContain("User directives:");
+    expect(text).toContain("latestUserDirective: Read brief.md and list the top priorities");
+    expect(text).toContain("Do not imply coverage you do not have");
+    expect(text).not.toContain("Old directive: keep the previous shortlist unchanged");
+    expect(text).not.toContain("Secondary continuity cues:");
+    expect(text).not.toContain("Recent messages");
+    expect(text).not.toContain("autoCompactionSummary:");
+  });
+
+  it("builds a split historical-support section for evidence-grounding mode", () => {
+    const text = buildSncEvidenceHistoricalSupportSection({
+      version: 2,
+      sessionId: "session-evidence-history-1",
+      sessionKey: "agent:main:ops",
+      updatedAt: "2026-04-03T10:00:00.000Z",
+      turnCount: 4,
+      autoCompactionSummary: "older summary",
+      storyLedger: {
+        userDirectives: ["Read brief.md and list the top priorities"],
+        assistantPlans: ["Inspect the files before answering"],
+        continuityNotes: [
+          "Older cue A should fall behind.",
+          "Older cue B should fall behind.",
+          "Newest cue C should survive.",
+          "Newest cue D should survive.",
+        ],
+        events: [],
+      },
+      chapterState: {
+        focus: "Read the current materials",
+        latestUserDirective: "Read brief.md and list the top priorities",
+        latestAssistantPlan: "Inspect the files before answering",
+        constraints: ["Do not imply coverage you do not have"],
+      },
+      recentMessages: [
+        { role: "user", text: "Read brief.md and list the top priorities" },
+        { role: "assistant", text: "I will inspect the file first" },
+      ],
+    });
+
+    expect(text).toContain("Use this only for contradiction avoidance");
+    expect(text).toContain("autoCompactionSummary: older summary");
+    expect(text).toContain("Secondary continuity cues:");
+    expect(text).toContain("- Inspect the files before answering");
+    expect(text).toContain("- Newest cue C should survive.");
+    expect(text).toContain("- Newest cue D should survive.");
+    expect(text).not.toContain("Older cue A should fall behind.");
+    expect(text).not.toContain("Older cue B should fall behind.");
+    expect(text).toContain("Recent messages (secondary context):");
+  });
+
+  it("suppresses stale rejected aliases from evidence historical support while keeping correction guardrails", () => {
+    const text = buildSncEvidenceHistoricalSupportSection({
+      version: 2,
+      sessionId: "session-evidence-history-2",
+      sessionKey: "agent:main:ops",
+      updatedAt: "2026-04-03T10:00:00.000Z",
+      turnCount: 5,
+      autoCompactionSummary: "older summary",
+      storyLedger: {
+        userDirectives: ["用林砚，不要写成林燕，并根据 brief.md 列出优先级。"],
+        assistantPlans: ["Read the current materials before answering"],
+        continuityNotes: ["Keep 林燕 consistent in chapter four.", "Do not write 林燕 in the chapter recap."],
+        events: [],
+      },
+      chapterState: {
+        focus: "Read the current materials",
+        latestUserDirective: "用林砚，不要写成林燕，并根据 brief.md 列出优先级。",
+        latestAssistantPlan: "Read the current materials before answering",
+        constraints: ["保持林砚这个写法一致"],
+      },
+      recentMessages: [
+        { role: "assistant", text: "Keep 林燕 consistent in chapter four." },
+        { role: "assistant", text: "Do not write 林燕 in the chapter recap." },
+      ],
+    });
+
+    expect(text).toContain("Secondary continuity cues:");
+    expect(text).toContain("Do not write 林燕 in the chapter recap.");
+    expect(text).not.toContain("Keep 林燕 consistent in chapter four.");
+    expect(text).toContain("Recent messages (secondary context):");
+    expect(text).not.toContain("ASSISTANT: Keep 林燕 consistent in chapter four.");
+  });
+
+  it("suppresses report-style assistant residue from writing-draft prompt surfaces", () => {
+    const text = buildSncSessionStateSection(
+      {
+        version: 2,
+        sessionId: "session-writing-report-1",
+        sessionKey: "agent:main:story",
+        updatedAt: "2026-04-06T12:00:00.000Z",
+        turnCount: 6,
+        storyLedger: {
+          userDirectives: ["Continue the confrontation scene in prose."],
+          assistantPlans: ["Completed the anchor checklist and aligned the reveal timing."],
+          continuityNotes: ["Keep the ring clue visible in the confrontation."],
+          events: [],
+        },
+        chapterState: {
+          focus: "Confrontation scene",
+          latestUserDirective: "Continue the confrontation scene in prose.",
+          latestAssistantPlan: "Completed the anchor checklist and aligned the reveal timing.",
+          constraints: ["Keep the prose in first person."],
+        },
+        recentMessages: [
+          { role: "user", text: "Continue the confrontation scene in prose." },
+          {
+            role: "assistant",
+            text: "Completed the anchor checklist and aligned the reveal timing.",
+          },
+        ],
+      },
+      { mode: "writing-prose" },
+    );
+
+    expect(text).toContain("Writing-draft mode:");
+    expect(text).not.toContain("secondaryAssistantCue:");
+    expect(text).not.toContain("Completed the anchor checklist");
+    expect(text).toContain("Keep the ring clue visible in the confrontation.");
+    expect(text).toContain("- USER: Continue the confrontation scene in prose.");
   });
 });

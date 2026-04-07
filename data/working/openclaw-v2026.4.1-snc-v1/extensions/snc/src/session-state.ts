@@ -3,6 +3,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import { normalizeHyphenSlug } from "openclaw/plugin-sdk/core";
+import { analyzeSncTranscriptMessage } from "./transcript-shaping.js";
 
 const STATE_VERSION = 2;
 const MAX_RECENT_MESSAGES = 8;
@@ -13,32 +14,49 @@ const MAX_CONSTRAINTS = 8;
 
 const DIRECTIVE_PATTERNS = [
   /\b(must|should|need to|keep|avoid|rewrite|revise|draft|continue)\b/i,
-  /(必须|应该|需要|保持|避免|改写|修订|起草|继续|请|务必|不要|帮我|保留|修改|重写|补充)/,
+  /(必须|应该|需要|保持|避免|改写|修订|起草|继续|务必|不要|帮我|保留|修改|重写|补充)/u,
 ];
 const FOCUS_PATTERNS = [
   /\b(chapter|scene|beat|outline|arc|conflict|reveal|climax|ending|opening)\b/i,
-  /(章节|场景|情节|主线|冲突|揭示|高潮|结尾|开头|开篇|转折|聚焦|重点)/,
+  /(章节|场景|情节|主线|冲突|揭示|高潮|结尾|开头|开场|转折|聚焦|重点)/u,
 ];
 const CONSTRAINT_PATTERNS = [
   /\b(keep|avoid|tone|style|voice|pacing|continuity|canon|pov|tense)\b/i,
-  /(保持|避免|不要|务必|尽量|语气|风格|口吻|节奏|连贯|设定|视角|时态|第一人称|第三人称)/,
+  /(保持|避免|不要|务必|尽量|语气|风格|口吻|节奏|连贯|设定|视角|时态|第一人称|第三人称)/u,
 ];
 const ACTION_PATTERNS = [
   /\b(will|plan|next|draft|outline|revise|expand|tighten|continue|rewrite)\b/i,
-  /(将|计划|下一步|起草|大纲|修订|扩写|精简|继续|重写|我会|我们将|接下来)/,
+  /(会|计划|下一步|起草|大纲|修订|扩写|精简|继续|重写|我会|我们会|接下来)/u,
 ];
 const CONTINUITY_PATTERNS = [
   /\b(continuity|canon|foreshadow|callback|payoff|consistency)\b/i,
-  /(连贯|设定|伏笔|呼应|回收|一致性|前文|延续|线索)/,
+  /(连贯|设定|伏笔|呼应|回收|一致性|前文|延续|线索)/u,
+];
+const CORRECTION_PREFERRED_THEN_REJECTED_PATTERNS = [
+  /(?:use|call|write|refer to(?:\s+\w+)? as|name(?:d)?|keep)\s+[“"「]?(?<preferred>[^"”」,.;:，。；：\n]{1,40})[”"」]?\s*(?:,|\s)+(?:not|instead of|rather than)\s+[“"「]?(?<rejected>[^"”」,.;:，。；：\n]{1,40})/giu,
+  /(?:用|写作|统一为|叫|称为|保持)\s*[“"「]?(?<preferred>[^"”」,.;:，。；：\n]{1,40})[”"」]?\s*(?:，|,|\s)*(?:不要写成|不是|而不是|不要再写成)\s*[“"「]?(?<rejected>[^"”」,.;:，。；：\n]{1,40})/gu,
+];
+const CORRECTION_REJECTED_THEN_PREFERRED_PATTERNS = [
+  /(?:change|rename|correct)\s+[“"「]?(?<rejected>[^"”」,.;:，。；：\n]{1,40})[”"」]?\s*(?:to|into|as)\s+[“"「]?(?<preferred>[^"”」,.;:，。；：\n]{1,40})/giu,
+  /(?:把|将)\s*[“"「]?(?<rejected>[^"”」,.;:，。；：\n]{1,40})[”"」]?\s*(?:改成|改为|统一成|统一为)\s*[“"「]?(?<preferred>[^"”」,.;:，。；：\n]{1,40})/gu,
+];
+const CORRECTION_GUARDRAIL_PREFIX_PATTERNS = [
+  /\b(?:do not|don't|dont|never|avoid|without|forbid|forbidden|ban|banned|exclude)\b/i,
+  /(不要|别|勿|禁止|避免|不可|不得|排除)/u,
 ];
 const USER_DIRECTIVE_FALLBACK_PATTERNS = [
-  /(请|帮我|务必|尽量|不要|避免|保持|继续|修改|重写|补充|总结|整理|列出|确认|对齐|采用|切换|保留|优化)/,
+  /(请|帮我|务必|尽量|不要|避免|保持|继续|修改|重写|补充|总结|整理|列出|确认|对齐|采用|切换|保留|优化)/u,
   /\b(please|help me|must|should|need to|keep|avoid|continue|revise|rewrite|draft|update|change|improve)\b/i,
 ];
 const INTERNAL_RUNTIME_EVENT_PATTERNS = [
   /\[Internal task completion event\]/i,
   /<<<BEGIN_UNTRUSTED_CHILD_RESULT>>>/i,
   /\bOpenClaw runtime context \(internal\):/i,
+];
+const REPORT_STYLE_ASSISTANT_PATTERNS = [
+  /\b(completed|done|finished|submitted|delivered|reported|fulfilled|handled|resolved|verified|confirmed)\b/i,
+  /\b(status update|progress update|handoff|deliverable|delivery note|checklist|submission|report mode)\b/i,
+  /(?:\u5df2\u5b8c\u6210|\u5df2\u63d0\u4ea4|\u5df2\u5904\u7406|\u5df2\u9a8c\u8bc1|\u5df2\u5bf9\u9f50|\u5df2\u5151\u73b0|\u6c47\u62a5|\u72b6\u6001\u66f4\u65b0|\u4ea4\u4ed8|\u6e05\u5355|\u68c0\u67e5\u8868|\u91cc\u7a0b\u7891)/u,
 ];
 
 type SncSegment = {
@@ -88,6 +106,16 @@ export type SncSessionState = {
   chapterState: SncChapterState;
 };
 
+export type SncSessionStateSectionMode =
+  | "continuity"
+  | "evidence-grounding"
+  | "writing-prose";
+
+type SncCorrectionPair = {
+  preferred: string;
+  rejected: string;
+};
+
 type SncTurnExtraction = {
   storyLedger: {
     userDirectives: string[];
@@ -112,7 +140,7 @@ function clampText(input: string, maxChars = MAX_MESSAGE_CHARS): string {
 }
 
 function normalizeTextKey(input: string): string {
-  return input.replace(/\s+/g, " ").trim().toLowerCase();
+  return input.normalize("NFKC").replace(/\s+/g, " ").trim().toLowerCase();
 }
 
 function normalizeStringList(value: unknown): string[] {
@@ -131,6 +159,184 @@ function normalizeStringList(value: unknown): string[] {
     entries.set(normalizeTextKey(trimmed), trimmed);
   }
   return [...entries.values()];
+}
+
+function normalizeOptionalString(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function containsNormalizedPhrase(haystack: string, needle: string): boolean {
+  const normalizedNeedle = normalizeTextKey(needle);
+  if (!normalizedNeedle) {
+    return false;
+  }
+  return normalizeTextKey(haystack).includes(normalizedNeedle);
+}
+
+function extractCorrectionPairs(text: string): SncCorrectionPair[] {
+  const pairs: SncCorrectionPair[] = [];
+  const seen = new Set<string>();
+
+  for (const pattern of CORRECTION_PREFERRED_THEN_REJECTED_PATTERNS) {
+    for (const match of text.matchAll(pattern)) {
+      const preferred = normalizeOptionalString(match.groups?.preferred);
+      const rejected = normalizeOptionalString(match.groups?.rejected);
+      if (!preferred || !rejected || normalizeTextKey(preferred) === normalizeTextKey(rejected)) {
+        continue;
+      }
+      const key = `${normalizeTextKey(preferred)}=>${normalizeTextKey(rejected)}`;
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      pairs.push({ preferred, rejected });
+    }
+  }
+
+  for (const pattern of CORRECTION_REJECTED_THEN_PREFERRED_PATTERNS) {
+    for (const match of text.matchAll(pattern)) {
+      const preferred = normalizeOptionalString(match.groups?.preferred);
+      const rejected = normalizeOptionalString(match.groups?.rejected);
+      if (!preferred || !rejected || normalizeTextKey(preferred) === normalizeTextKey(rejected)) {
+        continue;
+      }
+      const key = `${normalizeTextKey(preferred)}=>${normalizeTextKey(rejected)}`;
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      pairs.push({ preferred, rejected });
+    }
+  }
+
+  return pairs;
+}
+
+function collectLatestUserTurnMessages(
+  messages: SncSessionState["recentMessages"],
+): SncStateMessage[] {
+  const collected: SncStateMessage[] = [];
+  let sawUser = false;
+
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (!message) {
+      continue;
+    }
+    if (message.role === "assistant" && !sawUser) {
+      continue;
+    }
+    if (message.role === "assistant") {
+      break;
+    }
+    sawUser = true;
+    collected.push(message);
+  }
+
+  return collected.reverse();
+}
+
+function collectEvidenceCurrentUserDirectives(state: SncSessionState): string[] {
+  const latestTurnUserMessages = collectLatestUserTurnMessages(state.recentMessages);
+  if (latestTurnUserMessages.length > 0) {
+    const segments = latestTurnUserMessages.flatMap((message) =>
+      splitIntoSegments(message.text).map((text) => ({
+        source: "user" as const,
+        text,
+        ...(message.timestamp !== undefined ? { timestamp: message.timestamp } : {}),
+      })),
+    );
+    const latestUserSegment = segments.at(-1);
+    const latestUserDirective =
+      selectBestSegment(segments, DIRECTIVE_PATTERNS) ??
+      (latestUserSegment && hasAnyMatch(latestUserSegment.text, USER_DIRECTIVE_FALLBACK_PATTERNS)
+        ? latestUserSegment
+        : undefined);
+    if (latestUserDirective) {
+      return [latestUserDirective.text];
+    }
+  }
+
+  return state.chapterState.latestUserDirective ? [state.chapterState.latestUserDirective] : [];
+}
+
+function extractCorrectionPairsFromCurrentSupport(state: SncSessionState): SncCorrectionPair[] {
+  const sources = [
+    ...collectEvidenceCurrentUserDirectives(state),
+    ...(state.chapterState.latestUserDirective ? [state.chapterState.latestUserDirective] : []),
+    ...state.chapterState.constraints,
+  ];
+  const pairs: SncCorrectionPair[] = [];
+  const seen = new Set<string>();
+  for (const source of sources) {
+    for (const pair of extractCorrectionPairs(source)) {
+      const key = `${normalizeTextKey(pair.preferred)}=>${normalizeTextKey(pair.rejected)}`;
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      pairs.push(pair);
+    }
+  }
+  return pairs;
+}
+
+function isCorrectionGuardrailForRejected(text: string, rejected: string): boolean {
+  const normalizedText = normalizeTextKey(text);
+  const normalizedRejected = normalizeTextKey(rejected);
+  if (!normalizedRejected) {
+    return false;
+  }
+
+  let startIndex = normalizedText.indexOf(normalizedRejected);
+  while (startIndex >= 0) {
+    const prefix = normalizedText.slice(Math.max(0, startIndex - 32), startIndex);
+    if (CORRECTION_GUARDRAIL_PREFIX_PATTERNS.some((pattern) => pattern.test(prefix))) {
+      return true;
+    }
+    startIndex = normalizedText.indexOf(normalizedRejected, startIndex + normalizedRejected.length);
+  }
+
+  return false;
+}
+
+function filterAndSortCorrectionAwareEntries(
+  entries: string[],
+  pairs: SncCorrectionPair[],
+): string[] {
+  if (entries.length === 0 || pairs.length === 0) {
+    return entries;
+  }
+
+  return entries
+    .map((entry, index) => {
+      let supportScore = 0;
+      for (const pair of pairs) {
+        const mentionsPreferred = containsNormalizedPhrase(entry, pair.preferred);
+        const mentionsRejected = containsNormalizedPhrase(entry, pair.rejected);
+        if (
+          mentionsRejected &&
+          !mentionsPreferred &&
+          !isCorrectionGuardrailForRejected(entry, pair.rejected)
+        ) {
+          return null;
+        }
+        if (mentionsPreferred) {
+          supportScore += 2;
+        }
+        if (mentionsRejected && isCorrectionGuardrailForRejected(entry, pair.rejected)) {
+          supportScore += 1;
+        }
+      }
+      return { entry, index, supportScore };
+    })
+    .filter((entry): entry is { entry: string; index: number; supportScore: number } => Boolean(entry))
+    .sort((left, right) => right.supportScore - left.supportScore || left.index - right.index)
+    .map((entry) => entry.entry);
 }
 
 function normalizeEvents(value: unknown): SncLedgerEvent[] {
@@ -218,12 +424,12 @@ function splitIntoSegments(text: string): string[] {
   const segments: string[] = [];
   const lines = text
     .split(/\r?\n/)
-    .map((line) => line.replace(/^\s*(?:[-*•]|\d+[.)])\s*/, "").trim())
+    .map((line) => line.replace(/^\s*(?:[-*•]|\d+[.)])\s*/u, "").trim())
     .filter(Boolean);
 
   for (const line of lines) {
     const sentenceChunks = line
-      .split(/(?<=[.!?。！？；;])\s*/)
+      .split(/(?<=[.!?;。！？；])\s*/u)
       .map((entry) => entry.trim())
       .filter(Boolean);
     const subsegments = sentenceChunks.length > 0 ? sentenceChunks : [line];
@@ -340,7 +546,9 @@ function selectTopSegments(
       score: matchScore(segment.text, patterns),
     }))
     .filter((entry) => entry.score > 0)
-    .sort((left, right) => right.score - left.score || left.segment.text.length - right.segment.text.length);
+    .sort(
+      (left, right) => right.score - left.score || left.segment.text.length - right.segment.text.length,
+    );
 
   const selected = new Map<string, SncSegment>();
   for (const entry of ranked) {
@@ -624,7 +832,170 @@ function appendSection(lines: string[], title: string, entries: string[]): void 
   }
 }
 
-export function buildSncSessionStateSection(state: SncSessionState): string | undefined {
+function appendConstraints(lines: string[], constraints: string[]): void {
+  if (constraints.length === 0) {
+    return;
+  }
+  lines.push("- constraints:");
+  for (const constraint of constraints) {
+    lines.push(`  - ${constraint}`);
+  }
+}
+
+function appendRecentMessages(
+  lines: string[],
+  messages: SncSessionState["recentMessages"],
+  title = "Recent messages:",
+): void {
+  if (messages.length === 0) {
+    return;
+  }
+  lines.push("", title);
+  for (const message of messages) {
+    const label = message.role === "assistant" ? "ASSISTANT" : "USER";
+    lines.push(`- ${label}: ${message.text}`);
+  }
+}
+
+function collectEvidenceSecondaryContinuityCues(state: SncSessionState): string[] {
+  const correctionPairs = extractCorrectionPairsFromCurrentSupport(state);
+  const assistantCue = resolvePromptFacingAssistantCue(
+    state.chapterState.latestAssistantPlan,
+    "evidence-grounding",
+  );
+  return filterAndSortCorrectionAwareEntries([
+    ...(assistantCue ? [assistantCue] : []),
+    ...state.storyLedger.continuityNotes.slice(-2),
+  ], correctionPairs);
+}
+
+function isReportStyleAssistantText(text: string): boolean {
+  return REPORT_STYLE_ASSISTANT_PATTERNS.some((pattern) => pattern.test(text));
+}
+
+function shouldRetainPromptFacingAssistantText(
+  text: string,
+  mode: SncSessionStateSectionMode,
+): boolean {
+  const classification = analyzeSncTranscriptMessage({
+    role: "assistant",
+    content: text,
+  } as unknown as AgentMessage).classification;
+
+  if (classification === "assistant-ack" || classification === "assistant-meta") {
+    return false;
+  }
+
+  if (mode === "writing-prose" && isReportStyleAssistantText(text)) {
+    return false;
+  }
+
+  if (mode === "writing-prose" && classification === "assistant-plan") {
+    return hasAnyMatch(text, CONTINUITY_PATTERNS);
+  }
+
+  return true;
+}
+
+function resolvePromptFacingAssistantCue(
+  text: string | undefined,
+  mode: SncSessionStateSectionMode,
+): string | undefined {
+  if (!text) {
+    return undefined;
+  }
+  return shouldRetainPromptFacingAssistantText(text, mode) ? text : undefined;
+}
+
+function filterPromptFacingRecentMessages(
+  messages: ReadonlyArray<SncStateMessage>,
+  mode: SncSessionStateSectionMode,
+): SncStateMessage[] {
+  return messages.filter((message) => {
+    if (message.role !== "assistant") {
+      return true;
+    }
+    return shouldRetainPromptFacingAssistantText(message.text, mode);
+  });
+}
+
+export function buildSncEvidenceCurrentSupportSection(
+  state: SncSessionState,
+): string | undefined {
+  const currentUserDirectives = collectEvidenceCurrentUserDirectives(state);
+  const hasCurrentSupport =
+    currentUserDirectives.length > 0 ||
+    Boolean(state.chapterState.focus) ||
+    Boolean(state.chapterState.latestUserDirective) ||
+    state.chapterState.constraints.length > 0;
+
+  if (!hasCurrentSupport) {
+    return undefined;
+  }
+
+  const lines = [`updatedAt: ${state.updatedAt}`, `turnCount: ${state.turnCount}`];
+  lines.push("", "Evidence-grounding mode:");
+  lines.push("- current materials and current-turn wording outrank continuity carry-forward");
+  lines.push("- if current coverage is partial, say what you covered and what remains uncovered");
+  lines.push("- do not let old continuity imply that direct inspection is already complete");
+  lines.push("", "Current-turn support:");
+  appendSection(lines, "User directives:", currentUserDirectives);
+  if (state.chapterState.focus) {
+    lines.push(`- focus: ${state.chapterState.focus}`);
+  }
+  if (state.chapterState.latestUserDirective) {
+    lines.push(`- latestUserDirective: ${state.chapterState.latestUserDirective}`);
+  }
+  appendConstraints(lines, state.chapterState.constraints);
+  return lines.join("\n");
+}
+
+export function buildSncEvidenceHistoricalSupportSection(
+  state: SncSessionState,
+): string | undefined {
+  const secondaryContinuityCues = collectEvidenceSecondaryContinuityCues(state);
+  const correctionPairs = extractCorrectionPairsFromCurrentSupport(state);
+  const filteredRecentMessages = filterAndSortCorrectionAwareEntries(
+    state.recentMessages.map((message) => `${message.role === "assistant" ? "ASSISTANT" : "USER"}: ${message.text}`),
+    correctionPairs,
+  ).map((line) => {
+    const role = line.startsWith("ASSISTANT:") ? "assistant" : "user";
+    const text = line.replace(/^(?:ASSISTANT|USER):\s*/, "");
+    return { role, text } as const;
+  });
+  const promptFacingRecentMessages = filterPromptFacingRecentMessages(
+    filteredRecentMessages.map((message) => ({
+      role: message.role,
+      text: message.text,
+    })),
+    "evidence-grounding",
+  );
+  const hasHistoricalSupport =
+    secondaryContinuityCues.length > 0 ||
+    promptFacingRecentMessages.length > 0 ||
+    Boolean(state.autoCompactionSummary);
+
+  if (!hasHistoricalSupport) {
+    return undefined;
+  }
+
+  const lines = [
+    "Use this only for contradiction avoidance, terminology stability, and bounded carry-forward.",
+    "Do not treat it as proof that current materials were fully inspected.",
+  ];
+
+  if (state.autoCompactionSummary) {
+    lines.push("", `autoCompactionSummary: ${state.autoCompactionSummary}`);
+  }
+  appendSection(lines, "Secondary continuity cues:", secondaryContinuityCues);
+  appendRecentMessages(lines, promptFacingRecentMessages, "Recent messages (secondary context):");
+  return lines.join("\n");
+}
+
+export function buildSncSessionStateSection(
+  state: SncSessionState,
+  options: { mode?: SncSessionStateSectionMode } = {},
+): string | undefined {
   const hasStructuredState =
     state.storyLedger.userDirectives.length > 0 ||
     state.storyLedger.assistantPlans.length > 0 ||
@@ -643,37 +1014,64 @@ export function buildSncSessionStateSection(state: SncSessionState): string | un
     lines.push(`autoCompactionSummary: ${state.autoCompactionSummary}`);
   }
 
-  if (hasStructuredState) {
-    lines.push("", "Continuity ledger:");
-    appendSection(lines, "User directives:", state.storyLedger.userDirectives);
-    appendSection(lines, "Assistant plans:", state.storyLedger.assistantPlans);
-    appendSection(lines, "Continuity notes:", state.storyLedger.continuityNotes);
+  const evidenceGroundingMode = options.mode === "evidence-grounding";
+  const writingDraftMode = options.mode === "writing-prose";
+  const promptFacingAssistantCue = resolvePromptFacingAssistantCue(
+    state.chapterState.latestAssistantPlan,
+    options.mode ?? "continuity",
+  );
+  const promptFacingRecentMessages = filterPromptFacingRecentMessages(
+    state.recentMessages,
+    options.mode ?? "continuity",
+  );
 
-    lines.push("", "Active state:");
+  if (hasStructuredState) {
+    if (evidenceGroundingMode) {
+      lines.push("", "Evidence-grounding mode:");
+      lines.push("- prioritize current materials and explicit task wording before continuity carry-forward");
+      lines.push("- treat assistant plans and continuity cues as secondary unless current materials support them");
+      lines.push("", "Working state:");
+      appendSection(lines, "User directives:", state.storyLedger.userDirectives);
+    } else if (writingDraftMode) {
+      lines.push("", "Writing-draft mode:");
+      lines.push("- deliver the draft itself first and treat continuity as support, not as a preamble");
+      lines.push("- keep assistant planning cues secondary unless the user explicitly asks for plan or outline");
+      lines.push("", "Continuity cues:");
+      appendSection(lines, "User directives:", state.storyLedger.userDirectives);
+      appendSection(lines, "Continuity notes:", state.storyLedger.continuityNotes);
+      lines.push("", "Active draft state:");
+    } else {
+      lines.push("", "Continuity ledger:");
+      appendSection(lines, "User directives:", state.storyLedger.userDirectives);
+      appendSection(lines, "Assistant plans:", state.storyLedger.assistantPlans);
+      appendSection(lines, "Continuity notes:", state.storyLedger.continuityNotes);
+      lines.push("", "Active state:");
+    }
+
     if (state.chapterState.focus) {
       lines.push(`- focus: ${state.chapterState.focus}`);
     }
     if (state.chapterState.latestUserDirective) {
       lines.push(`- latestUserDirective: ${state.chapterState.latestUserDirective}`);
     }
-    if (state.chapterState.latestAssistantPlan) {
-      lines.push(`- latestAssistantPlan: ${state.chapterState.latestAssistantPlan}`);
+    if (promptFacingAssistantCue && !writingDraftMode && !evidenceGroundingMode) {
+      lines.push(`- latestAssistantPlan: ${promptFacingAssistantCue}`);
+    } else if (promptFacingAssistantCue && writingDraftMode) {
+      lines.push(`- secondaryAssistantCue: ${promptFacingAssistantCue}`);
     }
-    if (state.chapterState.constraints.length > 0) {
-      lines.push("- constraints:");
-      for (const constraint of state.chapterState.constraints) {
-        lines.push(`  - ${constraint}`);
-      }
+    appendConstraints(lines, state.chapterState.constraints);
+
+    if (evidenceGroundingMode) {
+      const secondaryContinuityCues = collectEvidenceSecondaryContinuityCues(state);
+      appendSection(
+        lines,
+        "Secondary continuity cues:",
+        secondaryContinuityCues,
+      );
     }
   }
 
-  if (state.recentMessages.length > 0) {
-    lines.push("", "Recent messages:");
-    for (const message of state.recentMessages) {
-      const label = message.role === "assistant" ? "ASSISTANT" : "USER";
-      lines.push(`- ${label}: ${message.text}`);
-    }
-  }
+  appendRecentMessages(lines, promptFacingRecentMessages);
 
   return lines.join("\n");
 }

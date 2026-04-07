@@ -18,13 +18,25 @@ import {
   harvestSncDurableMemoryEntries,
   loadSncDurableMemoryCatalog,
   persistSncDurableMemoryStore,
+  resolveSncDurableMemoryNamespace,
 } from "./durable-memory.js";
 import {
+  buildSncEvidenceCurrentSupportSection,
+  buildSncEvidenceHistoricalSupportSection,
   buildSncSessionStateSection,
   loadSncSessionState,
   persistSncSessionState,
   type SncSessionState,
 } from "./session-state.js";
+import {
+  buildSncOutputDisciplineSection,
+  buildSncTaskPostureSection,
+  detectSncOutputDiscipline,
+  detectSncTaskPosture,
+  resolveSncEvidenceAwareProjectionPolicy,
+  type SncOutputDisciplineContext,
+  type SncTaskPostureContext,
+} from "./task-posture.js";
 import { shapeSncTranscriptMessage } from "./transcript-shaping.js";
 import {
   applySncWorkerLaunchIntent,
@@ -37,16 +49,21 @@ import {
   loadSncWorkerState,
 } from "./worker-state.js";
 
-const SNC_ENGINE_VERSION = "0.1.0";
+const SNC_ENGINE_VERSION = "0.2.0";
 const RECENT_TRANSCRIPT_MESSAGE_WINDOW = 8;
 const RECENT_DURABLE_MEMORY_MESSAGE_WINDOW = 4;
 const MAX_MAINTENANCE_REWRITES = 1;
 const MIN_MAINTENANCE_BYTES_SAVED = 24;
 const MAX_DURABLE_MEMORY_CONTEXT_BYTES = 1_024;
+const MIN_SECTION_BODY_BYTES = 96;
+const MIN_BUDGET_NOTE_BYTES = 160;
+const SNC_TRUNCATION_MARKER = "\n\n[truncated by SNC]";
 
 type SncContextSection = {
   title: string;
   body: string;
+  budgetClass: "critical" | "standard" | "shrink-first";
+  budgetGroup?: "packet-dir" | "diagnostics";
 };
 
 type SncRuntimeFramingMode = Exclude<SncSpecializationMode, "auto">;
@@ -74,37 +91,268 @@ function clampUtf8(input: string, maxBytes: number): string {
     return input;
   }
 
+  if (maxBytes <= 0) {
+    return "";
+  }
+
+  const markerBytes = Buffer.byteLength(SNC_TRUNCATION_MARKER, "utf8");
+  if (maxBytes <= markerBytes) {
+    let low = 0;
+    let high = input.length;
+    while (low < high) {
+      const mid = Math.ceil((low + high) / 2);
+      if (Buffer.byteLength(input.slice(0, mid), "utf8") <= maxBytes) {
+        low = mid;
+      } else {
+        high = mid - 1;
+      }
+    }
+    return input.slice(0, low).trimEnd();
+  }
+
+  const contentBudget = maxBytes - markerBytes;
   let low = 0;
   let high = input.length;
 
   while (low < high) {
     const mid = Math.ceil((low + high) / 2);
-    if (Buffer.byteLength(input.slice(0, mid), "utf8") <= maxBytes) {
+    if (Buffer.byteLength(input.slice(0, mid), "utf8") <= contentBudget) {
       low = mid;
     } else {
       high = mid - 1;
     }
   }
 
-  return `${input.slice(0, low).trimEnd()}\n\n[truncated by SNC]`;
+  const head = input.slice(0, low).trimEnd();
+  const truncated = `${head}${SNC_TRUNCATION_MARKER}`;
+  return Buffer.byteLength(truncated, "utf8") <= maxBytes
+    ? truncated
+    : clampUtf8(head, maxBytes - markerBytes) + SNC_TRUNCATION_MARKER;
+}
+
+function renderSncContextSection(section: SncContextSection): string {
+  return `## ${section.title}\n${section.body}`;
+}
+
+function measureSncSectionBytes(section: SncContextSection): number {
+  return Buffer.byteLength(renderSncContextSection(section), "utf8");
+}
+
+function withClampedSectionBody(
+  section: SncContextSection,
+  maxBodyBytes: number,
+): SncContextSection {
+  return {
+    ...section,
+    body: clampUtf8(section.body, maxBodyBytes),
+  };
+}
+
+function resolvePacketDirBudget(maxBytes: number): number {
+  return Math.max(512, Math.min(Math.floor(maxBytes * 0.35), 6_144));
+}
+
+function resolveDiagnosticsBudget(maxBytes: number): number {
+  return Math.max(384, Math.min(Math.floor(maxBytes * 0.18), 1_536));
+}
+
+function applySncGroupBudgets(
+  sections: SncContextSection[],
+  maxBytes: number,
+): { sections: SncContextSection[]; notes: string[] } {
+  const packetDirBudget = resolvePacketDirBudget(maxBytes);
+  const diagnosticsBudget = resolveDiagnosticsBudget(maxBytes);
+  const packetDirSections = sections.filter((section) => section.budgetGroup === "packet-dir");
+  const diagnosticsSections = sections.filter((section) => section.budgetGroup === "diagnostics");
+  const sectionIndexes = new Map(sections.map((section, index) => [section, index]));
+  const replacements = new Map<number, SncContextSection>();
+  const omittedIndexes = new Set<number>();
+  const notes: string[] = [];
+
+  const applyGroupBudget = (
+    groupSections: SncContextSection[],
+    budget: number,
+    omittedLabel: string,
+  ) => {
+    let consumed = 0;
+    let omitted = 0;
+    for (const section of groupSections) {
+      const index = sectionIndexes.get(section);
+      if (index === undefined) {
+        continue;
+      }
+      const currentBytes = measureSncSectionBytes(section);
+      if (consumed + currentBytes <= budget) {
+        consumed += currentBytes;
+        continue;
+      }
+
+      const remaining = budget - consumed;
+      if (remaining >= MIN_SECTION_BODY_BYTES && !replacements.has(index)) {
+        const truncated = withClampedSectionBody(section, remaining);
+        replacements.set(index, truncated);
+        consumed += measureSncSectionBytes(truncated);
+      } else {
+        omittedIndexes.add(index);
+        omitted += 1;
+      }
+    }
+    if (omitted > 0) {
+      notes.push(`${omitted} ${omittedLabel} omitted by SNC section budget.`);
+    }
+  };
+
+  applyGroupBudget(packetDirSections, packetDirBudget, "packet-dir section(s)");
+  applyGroupBudget(diagnosticsSections, diagnosticsBudget, "diagnostics section(s)");
+
+  return {
+    sections: sections
+      .map((section, index) => replacements.get(index) ?? section)
+      .filter((_, index) => !omittedIndexes.has(index)),
+    notes,
+  };
+}
+
+function fitSncSectionsToBudget(
+  sections: SncContextSection[],
+  maxBytes: number,
+): SncContextSection[] {
+  const afterGroupBudgets = applySncGroupBudgets(sections, maxBytes);
+  const working = [...afterGroupBudgets.sections];
+  const notes = [...afterGroupBudgets.notes];
+  const totalBytes = () =>
+    working.reduce((sum, section) => sum + measureSncSectionBytes(section), 0);
+
+  while (totalBytes() > maxBytes) {
+    const shrinkIndex = [...working.keys()]
+      .reverse()
+      .find((index) => working[index]?.budgetClass === "shrink-first");
+    if (shrinkIndex === undefined) {
+      break;
+    }
+    const removed = working.splice(shrinkIndex, 1)[0];
+    notes.push(`${removed.title} omitted by SNC section budget.`);
+  }
+
+  while (totalBytes() > maxBytes) {
+    const clampIndex = [...working.keys()]
+      .reverse()
+      .find(
+        (index) =>
+          working[index]?.budgetClass !== "critical" &&
+          Buffer.byteLength(working[index]!.body, "utf8") > MIN_SECTION_BODY_BYTES,
+      );
+    if (clampIndex === undefined) {
+      break;
+    }
+    const overflow = totalBytes() - maxBytes;
+    const current = working[clampIndex]!;
+    const bodyBytes = Buffer.byteLength(current.body, "utf8");
+    const targetBodyBytes = Math.max(MIN_SECTION_BODY_BYTES, bodyBytes - overflow - 48);
+    working[clampIndex] = withClampedSectionBody(current, targetBodyBytes);
+  }
+
+  if (notes.length > 0) {
+    const budgetNotesSection: SncContextSection = {
+      title: "SNC budget notes",
+      body: clampUtf8(
+        ["SNC trimmed optional context to keep higher-trust sections alive.", ...notes]
+          .map((line) => `- ${line}`)
+          .join("\n"),
+        Math.max(MIN_BUDGET_NOTE_BYTES, Math.min(768, Math.floor(maxBytes * 0.16))),
+      ),
+      budgetClass: "shrink-first",
+      budgetGroup: "diagnostics",
+    };
+    working.push(budgetNotesSection);
+    while (totalBytes() > maxBytes) {
+      const shrinkFirstNonNotesIndex = [...working.keys()]
+        .reverse()
+        .find(
+          (index) =>
+            working[index]?.budgetClass === "shrink-first" &&
+            working[index]?.title !== "SNC budget notes",
+        );
+      if (shrinkFirstNonNotesIndex !== undefined) {
+        const removed = working.splice(shrinkFirstNonNotesIndex, 1)[0];
+        notes.push(`${removed.title} omitted to preserve SNC budget notes.`);
+        continue;
+      }
+
+      const removableStandardIndex = [...working.keys()]
+        .reverse()
+        .find(
+          (index) =>
+            working[index]?.title !== "SNC budget notes" &&
+            working[index]?.budgetClass === "standard",
+        );
+      if (removableStandardIndex !== undefined) {
+        const removed = working.splice(removableStandardIndex, 1)[0];
+        notes.push(`${removed.title} omitted to preserve SNC budget notes.`);
+        continue;
+      }
+
+      const clampIndex = [...working.keys()]
+        .reverse()
+        .find(
+          (index) =>
+            working[index]?.title !== "SNC budget notes" &&
+            working[index]?.budgetClass !== "critical" &&
+            Buffer.byteLength(working[index]!.body, "utf8") > MIN_SECTION_BODY_BYTES,
+        );
+      if (clampIndex !== undefined) {
+        const overflow = totalBytes() - maxBytes;
+        const current = working[clampIndex]!;
+        const bodyBytes = Buffer.byteLength(current.body, "utf8");
+        const targetBodyBytes = Math.max(MIN_SECTION_BODY_BYTES, bodyBytes - overflow - 48);
+        working[clampIndex] = withClampedSectionBody(current, targetBodyBytes);
+        continue;
+      }
+
+      const removableIndex = [...working.keys()]
+        .reverse()
+        .find((index) => working[index]?.title === "SNC budget notes");
+      if (removableIndex === undefined) {
+        break;
+      }
+      working.splice(removableIndex, 1);
+      break;
+    }
+  }
+
+  return working;
 }
 
 function buildSystemPromptAddition(
   sections: SncContextSection[],
   framingMode: SncRuntimeFramingMode,
+  taskPosture: SncTaskPostureContext,
+  outputDiscipline: SncOutputDisciplineContext,
+  maxBytes: number,
 ): string | undefined {
   if (sections.length === 0) {
     return undefined;
   }
 
-  const intro =
-    framingMode === "writing"
+  const intro = (() => {
+    if (taskPosture.posture === "evidence-grounding") {
+      return "SNC evidence-grounding context follows. When the user asks you to read, inspect, compare, or list from current materials, prioritize those materials first and treat continuity as secondary support.";
+    }
+    if (framingMode === "writing" && outputDiscipline.mode === "writing-prose") {
+      return "SNC writing context follows. This turn looks like direct drafting, so deliver clean prose first and keep process chatter out unless the user explicitly asks for it.";
+    }
+    return framingMode === "writing"
       ? "SNC writing context follows. Prefer it when drafting, revising, and maintaining continuity."
       : "SNC continuity context follows. Use it to preserve active instructions, continuity, and worker results across turns.";
+  })();
+
+  const introBytes = Buffer.byteLength(intro, "utf8");
+  const sectionBudget = Math.max(MIN_SECTION_BODY_BYTES, maxBytes - introBytes - 2);
+  const budgetedSections = fitSncSectionsToBudget(sections, sectionBudget);
 
   return [
     intro,
-    ...sections.map((section) => `## ${section.title}\n${section.body}`),
+    ...budgetedSections.map((section) => renderSncContextSection(section)),
   ].join("\n\n");
 }
 
@@ -344,12 +592,64 @@ export class SncContextEngine implements ContextEngine {
       return null;
     });
 
-    const sessionStateBody = sessionState ? buildSncSessionStateSection(sessionState) : undefined;
-    if (sessionStateBody) {
+    const taskPosture = detectSncTaskPosture({
+      messages: params.messages,
+      sessionState,
+    });
+    const taskPostureBody = buildSncTaskPostureSection(taskPosture);
+    if (taskPostureBody) {
       sections.push({
-        title: "Session snapshot",
-        body: sessionStateBody,
+        title: "Task posture",
+        body: taskPostureBody,
+        budgetClass: "critical",
       });
+    }
+    const outputDiscipline = detectSncOutputDiscipline({
+      messages: params.messages,
+      sessionState,
+      framingMode,
+      taskPosture,
+    });
+    const outputDisciplineBody = buildSncOutputDisciplineSection(outputDiscipline);
+    if (outputDisciplineBody) {
+      sections.push({
+        title: "Writing output discipline",
+        body: outputDisciplineBody,
+        budgetClass: "critical",
+      });
+    }
+
+    if (sessionState) {
+      if (taskPosture.posture === "evidence-grounding") {
+        const currentSupportBody = buildSncEvidenceCurrentSupportSection(sessionState);
+        if (currentSupportBody) {
+          sections.push({
+            title: "Current-task support",
+            body: currentSupportBody,
+            budgetClass: "critical",
+          });
+        }
+
+        const historicalSupportBody = buildSncEvidenceHistoricalSupportSection(sessionState);
+        if (historicalSupportBody) {
+          sections.push({
+            title: "Historical continuity support",
+            body: historicalSupportBody,
+            budgetClass: "shrink-first",
+          });
+        }
+      } else {
+        const sessionStateBody = buildSncSessionStateSection(sessionState, {
+          mode: outputDiscipline.mode === "writing-prose" ? "writing-prose" : "continuity",
+        });
+        if (sessionStateBody) {
+          sections.push({
+            title: "Session snapshot",
+            body: sessionStateBody,
+            budgetClass: "critical",
+          });
+        }
+      }
     }
 
     const workerState = await loadSncWorkerState({
@@ -371,6 +671,7 @@ export class SncContextEngine implements ContextEngine {
       sections.push({
         title: "Worker launch lane",
         body: workerLaunchBody,
+        budgetClass: "standard",
       });
     }
 
@@ -381,6 +682,8 @@ export class SncContextEngine implements ContextEngine {
       sections.push({
         title: "Worker diagnostics",
         body: workerDiagnosticsBody,
+        budgetClass: "shrink-first",
+        budgetGroup: "diagnostics",
       });
     }
 
@@ -389,11 +692,13 @@ export class SncContextEngine implements ContextEngine {
       sections.push({
         title: "Worker controller",
         body: workerStateBody,
+        budgetClass: "standard",
       });
     }
 
     const durableCatalog = await loadSncDurableMemoryCatalog({
       stateDir: this.config.stateDir,
+      namespace: this.resolveDurableMemoryNamespace(params.sessionId, params.sessionKey),
     }).catch((error) => {
       this.warnOnce(
         `durable-read:${params.sessionId}`,
@@ -402,20 +707,25 @@ export class SncContextEngine implements ContextEngine {
       return null;
     });
 
+    const durableProjectionPolicy = resolveSncEvidenceAwareProjectionPolicy(taskPosture, {
+      limit: this.config.durableMemory.projectionLimit,
+      minimumScore: this.config.durableMemory.projectionMinimumScore,
+    });
     const durableMemoryBody = durableCatalog
       ? buildSncDurableMemorySection({
           entries: durableCatalog,
           currentText: extractDurableMemoryCurrentText(params.messages),
           currentFocus: sessionState?.chapterState.focus,
           currentConstraints: sessionState?.chapterState.constraints,
-          limit: this.config.durableMemory.projectionLimit,
-          minimumScore: this.config.durableMemory.projectionMinimumScore,
+          limit: durableProjectionPolicy.limit,
+          minimumScore: durableProjectionPolicy.minimumScore,
         })
       : undefined;
     if (durableMemoryBody) {
       sections.push({
         title: "Durable memory",
         body: durableMemoryBody,
+        budgetClass: "standard",
       });
     }
 
@@ -425,8 +735,8 @@ export class SncContextEngine implements ContextEngine {
           currentText: extractDurableMemoryCurrentText(params.messages),
           currentFocus: sessionState?.chapterState.focus,
           currentConstraints: sessionState?.chapterState.constraints,
-          limit: this.config.durableMemory.projectionLimit,
-          minimumScore: this.config.durableMemory.projectionMinimumScore,
+          limit: durableProjectionPolicy.limit,
+          minimumScore: durableProjectionPolicy.minimumScore,
           now: durableCatalog.updatedAt,
           staleEntryDays: this.config.durableMemory.staleEntryDays,
         })
@@ -435,6 +745,8 @@ export class SncContextEngine implements ContextEngine {
       sections.push({
         title: "Durable memory diagnostics",
         body: durableMemoryDiagnosticsBody,
+        budgetClass: "shrink-first",
+        budgetGroup: "diagnostics",
       });
     }
 
@@ -442,7 +754,15 @@ export class SncContextEngine implements ContextEngine {
       messages: params.messages,
       estimatedTokens: 0,
       ...(sections.length > 0
-        ? { systemPromptAddition: buildSystemPromptAddition(sections, framingMode) }
+        ? {
+            systemPromptAddition: buildSystemPromptAddition(
+              sections,
+              framingMode,
+              taskPosture,
+              outputDiscipline,
+              this.config.maxSectionBytes,
+            ),
+          }
         : {}),
     };
   }
@@ -527,6 +847,7 @@ export class SncContextEngine implements ContextEngine {
     try {
       await persistSncDurableMemoryStore({
         stateDir: this.config.stateDir,
+        namespace: this.resolveDurableMemoryNamespace(params.sessionId, params.sessionKey),
         entries: harvestedEntries,
         now: persistedState?.updatedAt,
         maxCatalogEntries: this.config.durableMemory.maxCatalogEntries,
@@ -629,7 +950,13 @@ export class SncContextEngine implements ContextEngine {
     ].filter((filePath): filePath is string => Boolean(filePath));
 
     for (const filePath of orderedFiles) {
-      const section = await this.loadSectionFromFile(filePath);
+      const budgetClass =
+        filePath === this.config.briefFile || filePath === this.config.ledgerFile
+          ? "critical"
+          : "standard";
+      const section = await this.loadSectionFromFile(filePath, {
+        budgetClass,
+      });
       if (section) {
         sections.push(section);
       }
@@ -654,7 +981,10 @@ export class SncContextEngine implements ContextEngine {
 
       const sections: SncContextSection[] = [];
       for (const fileName of candidateFiles) {
-        const section = await this.loadSectionFromFile(path.join(packetDir, fileName));
+        const section = await this.loadSectionFromFile(path.join(packetDir, fileName), {
+          budgetClass: "shrink-first",
+          budgetGroup: "packet-dir",
+        });
         if (section) {
           sections.push(section);
         }
@@ -666,7 +996,10 @@ export class SncContextEngine implements ContextEngine {
     }
   }
 
-  private async loadSectionFromFile(filePath: string): Promise<SncContextSection | null> {
+  private async loadSectionFromFile(
+    filePath: string,
+    budget: Pick<SncContextSection, "budgetClass" | "budgetGroup">,
+  ): Promise<SncContextSection | null> {
     try {
       const raw = await readFile(filePath, "utf8");
       const trimmed = raw.trim();
@@ -677,6 +1010,8 @@ export class SncContextEngine implements ContextEngine {
       return {
         title: buildSncSectionTitle(filePath),
         body: clampUtf8(trimmed, this.config.maxSectionBytes),
+        budgetClass: budget.budgetClass,
+        ...(budget.budgetGroup ? { budgetGroup: budget.budgetGroup } : {}),
       };
     } catch (error) {
       this.warnOnce(filePath, `SNC context file unavailable: ${filePath} (${String(error)})`);
@@ -690,6 +1025,14 @@ export class SncContextEngine implements ContextEngine {
     }
     this.warnedPaths.add(key);
     this.logger?.warn(message);
+  }
+
+  private resolveDurableMemoryNamespace(sessionId: string, sessionKey?: string): string | undefined {
+    return resolveSncDurableMemoryNamespace({
+      sessionId,
+      sessionKey,
+      configuredNamespace: this.config.memoryNamespace,
+    });
   }
 }
 

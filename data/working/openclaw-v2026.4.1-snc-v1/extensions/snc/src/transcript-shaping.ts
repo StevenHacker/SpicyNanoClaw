@@ -5,34 +5,42 @@ export const SNC_META_NOTE_PREFIX = "Meta note preserved by SNC:";
 
 const DEFAULT_MAX_SUMMARY_BYTES = 480;
 const DEFAULT_MAX_SEGMENTS = 3;
-const QUOTE_PATTERN = /["“”‘’「」『』]/u;
+const QUOTE_PATTERN = /["“”‘’「」『』《》〈〉]/u;
 const SPEECH_VERB_PATTERNS = [
   /\b(said|asked|replied|whispered)\b/i,
-  /(说道|问道|回答|低声|应道|回道)/,
+  /(说道|问道|回答|低声|应道|回道)/u,
 ];
 
 const PLAN_PATTERNS = [
   /\b(next|plan|i will|we will|outline|draft|revise|rewrite|expand|continue|approach|step(?:s)?)\b/i,
   /\b(i'll|we'll|going to|let me)\b/i,
-  /(下一步|接下来|计划|打算|我会|我们会|先|然后|继续|改写|重写|扩写|润色|整理|补充|推进|起草|修订)/,
+  /(下一步|接下来|计划|打算|我会|我们会|然后|继续|改写|重写|扩写|润色|整理|补充|推进|起草|修订)/u,
 ];
 const META_PATTERNS = [
   /\b(internal note|scratch note|working note|meta note|notes to self|thought process)\b/i,
   /\b(reasoning|options|candidate|tradeoff|considering|process note|thinking through)\b/i,
-  /(内部备注|内部说明|工作笔记|元备注|思路|备选|取舍|权衡|过程说明|自我备注|考虑|比较|方案)/,
+  /(内部备注|内部说明|工作笔记|元备注|思路备注|取舍|权衡|过程说明|自我备注|考虑|比较|方案)/u,
 ];
 const CONTINUITY_PATTERNS = [
   /\b(continuity|canon|foreshadow|callback|payoff|consistency|anchor|thread)\b/i,
-  /(连贯|设定|伏笔|呼应|回收|一致性|前文|延续|线索|照应|世界观|人物关系)/,
+  /(连贯|设定|伏笔|呼应|回收|一致性|前文|延续|线索|照应|世界观|人物关系)/u,
 ];
 const STORY_GUARD_PATTERNS = [
   QUOTE_PATTERN,
   /\b(said|asked|replied|whispered|looked|walked|smiled|sighed)\b/i,
-  /(说道|问道|回答|低声|看着|走向|笑了|叹了口气|转身|站在)/,
+  /(说道|问道|回答|低声|看着|走向|笑了|叹了口气|转身|站在)/u,
 ];
 const ACK_PATTERNS = [
   /^\s*(ok|okay|understood|got it|sure|will do|sounds good|acknowledged)[.!?]?\s*$/i,
-  /^\s*(好的|收到|明白|知道了|行|没问题|可以|继续吧)[。！？!?]?\s*$/u,
+  /^\s*(好的|收到|明白|知道了|行|没问题|可以|继续吧?)[。！？!?]?\s*$/u,
+];
+const PLAN_LEAD_PATTERNS = [
+  /^\s*(?:plan|next|outline|draft|revise|rewrite|continue|let me)\b/i,
+  /^\s*(?:计划|下一步|接下来|我会|我们会|然后|继续|改写|重写|扩写|润色|整理|补充|推进|起草|修订)(?:[:：，,]|$)/u,
+];
+const META_LEAD_PATTERNS = [
+  /^\s*(?:internal note|scratch note|working note|meta note|notes to self|process note)\b/i,
+  /^\s*(?:内部备注|内部说明|工作笔记|元备注|思路备注|过程说明|自我备注)(?:[:：，,]|$)/u,
 ];
 
 export type SncTranscriptClassification =
@@ -97,7 +105,7 @@ function normalizeInlineWhitespace(text: string): string {
 }
 
 function normalizeKey(text: string): string {
-  return text.toLowerCase();
+  return text.normalize("NFKC").toLowerCase();
 }
 
 function countMatches(text: string, patterns: RegExp[]): number {
@@ -150,7 +158,7 @@ function splitSegments(text: string): string[] {
   const deduped = new Map<string, string>();
   const lines = text
     .split(/\r?\n+/)
-    .map((line) => line.replace(/^\s*(?:[-*]|\d+[.)])\s*/, ""))
+    .map((line) => line.replace(/^\s*(?:[-*•]|\d+[.)])\s*/u, ""))
     .flatMap((line) => line.split(/(?<=[.!?;。！？；])\s*/u))
     .map((line) => normalizeInlineWhitespace(line))
     .filter(Boolean);
@@ -248,6 +256,8 @@ export function analyzeSncTranscriptMessage(message: AgentMessage): SncTranscrip
   const continuityScore = countMatches(text, CONTINUITY_PATTERNS) + continuitySegments.length;
   const storyGuard = hasAnyMatch(text, STORY_GUARD_PATTERNS);
   const hasDialogueStoryGuard = QUOTE_PATTERN.test(text) && hasAnyMatch(text, SPEECH_VERB_PATTERNS);
+  const explicitPlanLead = hasAnyMatch(text, PLAN_LEAD_PATTERNS);
+  const explicitMetaLead = hasAnyMatch(text, META_LEAD_PATTERNS);
 
   let classification: SncTranscriptClassification = "assistant-other";
   if (ACK_PATTERNS.some((pattern) => pattern.test(text)) && planScore === 0 && metaScore === 0) {
@@ -257,8 +267,14 @@ export function analyzeSncTranscriptMessage(message: AgentMessage): SncTranscrip
     (storyGuard && metaScore === 0 && continuityScore === 0 && planScore <= 1)
   ) {
     classification = "assistant-story";
+  } else if (explicitMetaLead && metaScore > 0) {
+    classification = "assistant-meta";
+  } else if (explicitPlanLead && (planScore > 0 || continuityScore > 0)) {
+    classification = "assistant-plan";
+  } else if (metaScore > planScore && metaScore > 0) {
+    classification = "assistant-meta";
   } else if (planScore > 0 || continuityScore > 0) {
-    classification = planScore >= metaScore ? "assistant-plan" : "assistant-meta";
+    classification = "assistant-plan";
   } else if (metaScore > 0) {
     classification = "assistant-meta";
   }
@@ -291,13 +307,13 @@ export function shapeSncTranscriptMessage(
   }
 
   const maxSegments = Math.max(1, Math.floor(options.maxSegments ?? DEFAULT_MAX_SEGMENTS));
-  const maxSummaryBytes = Math.max(64, Math.floor(options.maxSummaryBytes ?? DEFAULT_MAX_SUMMARY_BYTES));
+  const maxSummaryBytes = Math.max(
+    64,
+    Math.floor(options.maxSummaryBytes ?? DEFAULT_MAX_SUMMARY_BYTES),
+  );
   const preferredSegments =
     analysis.classification === "assistant-plan"
-      ? dedupeSegments([
-          ...analysis.planSegments,
-          ...analysis.continuitySegments,
-        ])
+      ? dedupeSegments([...analysis.planSegments, ...analysis.continuitySegments])
       : dedupeSegments([
           ...analysis.metaSegments,
           ...analysis.continuitySegments,

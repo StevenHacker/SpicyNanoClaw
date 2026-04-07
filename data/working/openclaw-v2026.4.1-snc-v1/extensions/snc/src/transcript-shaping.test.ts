@@ -88,11 +88,11 @@ describe("SNC transcript shaping utility", () => {
     expect(result.summary).not.toContain("比较两个收束方案");
   });
 
-  it("classifies Chinese process chatter as a meta note", () => {
+  it("classifies Chinese meta chatter as a meta note even when it mentions next steps", () => {
     const result = shapeSncTranscriptMessage(
       message(
         "assistant",
-        "内部备注：我在比较两个方案，看看哪种收束更稳。需要保持前文线索的呼应。",
+        "内部备注：先收束冲突，再推进对白，还要比较两个结尾方案，确认哪种更稳。",
       ),
       {
         maxSegments: 2,
@@ -102,8 +102,7 @@ describe("SNC transcript shaping utility", () => {
     expect(result.classification).toBe("assistant-meta");
     expect(result.shouldRewrite).toBe(true);
     expect(result.summary).toContain(SNC_META_NOTE_PREFIX);
-    expect(result.summary).toContain("内部备注：我在比较两个方案");
-    expect(result.summary).toContain("保持前文线索的呼应");
+    expect(result.summary).toContain("内部备注：先收束冲突");
   });
 
   it("protects likely story prose from shaping", () => {
