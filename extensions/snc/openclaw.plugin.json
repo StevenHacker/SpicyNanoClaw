@@ -1,0 +1,77 @@
+{
+  "id": "snc",
+  "name": "SpicyNanoClaw",
+  "description": "Writing-oriented context engine for OpenClaw.",
+  "kind": "context-engine",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "briefFile": {
+        "type": "string",
+        "minLength": 1
+      },
+      "ledgerFile": {
+        "type": "string",
+        "minLength": 1
+      },
+      "packetFiles": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "packetDir": {
+        "type": "string",
+        "minLength": 1
+      },
+      "stateDir": {
+        "type": "string",
+        "minLength": 1
+      },
+      "sessionPatterns": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "maxSectionBytes": {
+        "type": "number",
+        "minimum": 512
+      }
+    }
+  },
+  "uiHints": {
+    "briefFile": {
+      "label": "Brief File",
+      "help": "Optional project brief or writing charter file injected into the SNC system prompt."
+    },
+    "ledgerFile": {
+      "label": "Ledger File",
+      "help": "Optional story ledger or continuity ledger file injected on each turn."
+    },
+    "packetFiles": {
+      "label": "Packet Files",
+      "help": "Ordered list of extra context packet files to inject after the brief and ledger."
+    },
+    "packetDir": {
+      "label": "Packet Directory",
+      "help": "Optional directory of .md, .txt, or .json files loaded alphabetically into the SNC packet."
+    },
+    "stateDir": {
+      "label": "State Directory",
+      "help": "Optional directory where SNC stores per-session state snapshots for reuse across turns."
+    },
+    "sessionPatterns": {
+      "label": "Session Patterns",
+      "help": "Optional regex list. When set, SNC only injects context and persists state for matching session ids or session keys."
+    },
+    "maxSectionBytes": {
+      "label": "Max Section Bytes",
+      "help": "Per-file byte cap before SNC truncates injected content.",
+      "advanced": true
+    }
+  }
+}
