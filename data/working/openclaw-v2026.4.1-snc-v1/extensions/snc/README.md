@@ -225,6 +225,58 @@ openclaw plugins install openclaw-snc
 
 Restart the gateway after changing plugin config.
 
+## Full-Feature OpenClaw Config
+
+If you want SNC's full current feature set in OpenClaw, use one explicit config like this:
+
+```json5
+{
+  plugins: {
+    slots: {
+      contextEngine: "snc",
+    },
+    entries: {
+      snc: {
+        enabled: true,
+        config: {
+          briefFile: "./docs/snc/brief.md",
+          ledgerFile: "./docs/snc/ledger.md",
+          packetDir: "./docs/snc/packets",
+          stateDir: "./.snc/state",
+          specializationMode: "writing",
+          maxSectionBytes: 24576,
+          durableMemory: {
+            maxCatalogEntries: 64,
+            staleEntryDays: 30,
+            projectionLimit: 3,
+            projectionMinimumScore: 3
+          },
+          hooks: {
+            enabled: true,
+            targets: [
+              "before_message_write",
+              "tool_result_persist",
+              "session_end",
+              "subagent_spawned",
+              "subagent_ended"
+            ],
+            maxRewritesPerSession: 6,
+            maxReplacementBytes: 768,
+            maxToolResultBytes: 2048
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+Notes:
+
+- this is the current "full SNC" OpenClaw profile
+- leave `memoryNamespace` unset unless you intentionally want multiple agent families to share one durable-memory pool
+- if you want a neutral assistant profile instead of writing-first behavior, switch `specializationMode` to `"auto"` or `"general"`
+
 ## Why It Feels Better
 
 SNC is not trying to replace OpenClaw.
