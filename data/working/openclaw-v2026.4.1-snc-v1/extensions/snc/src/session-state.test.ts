@@ -310,6 +310,46 @@ describe("snc session state", () => {
     expect(text).toContain("Verified the missing-ring clue remains visible in chapter three.");
   });
 
+  it("suppresses pure process residue from evidence historical support", () => {
+    const text = buildSncEvidenceHistoricalSupportSection({
+      version: 2,
+      sessionId: "session-evidence-history-3",
+      sessionKey: "agent:main:ops",
+      updatedAt: "2026-04-03T10:00:00.000Z",
+      turnCount: 4,
+      storyLedger: {
+        userDirectives: ["Read brief.md and verify the ring clue state"],
+        assistantPlans: ["Completed the anchor checklist and aligned the reveal timing."],
+        continuityNotes: [
+          "Completed the anchor checklist and aligned the reveal timing.",
+          "Verified the missing-ring clue remains visible in chapter three.",
+        ],
+        events: [],
+      },
+      chapterState: {
+        focus: "Verify the ring clue state",
+        latestUserDirective: "Read brief.md and verify the ring clue state",
+        latestAssistantPlan: "Completed the anchor checklist and aligned the reveal timing.",
+        constraints: ["List only what the current files support"],
+      },
+      recentMessages: [
+        { role: "user", text: "Read brief.md and verify the ring clue state" },
+        {
+          role: "assistant",
+          text: "Completed the anchor checklist and aligned the reveal timing.",
+        },
+        {
+          role: "assistant",
+          text: "Verified the missing-ring clue remains visible in chapter three.",
+        },
+      ],
+    });
+
+    expect(text).toContain("Secondary continuity cues:");
+    expect(text).toContain("Verified the missing-ring clue remains visible in chapter three.");
+    expect(text).not.toContain("Completed the anchor checklist and aligned the reveal timing.");
+  });
+
   it("builds a split current-support section for evidence-grounding mode", () => {
     const text = buildSncEvidenceCurrentSupportSection({
       version: 2,
@@ -394,6 +434,36 @@ describe("snc session state", () => {
     expect(text).toContain("Recent messages (secondary context):");
   });
 
+  it("deduplicates evidence historical continuity cues when assistant-plan and continuity note match", () => {
+    const text = buildSncEvidenceHistoricalSupportSection({
+      version: 2,
+      sessionId: "session-evidence-history-duplicate-1",
+      sessionKey: "agent:main:ops",
+      updatedAt: "2026-04-03T10:00:00.000Z",
+      turnCount: 4,
+      storyLedger: {
+        userDirectives: ["Read brief.md and verify the ring clue state"],
+        assistantPlans: ["Verified the missing-ring clue remains visible in chapter three."],
+        continuityNotes: ["Verified the missing-ring clue remains visible in chapter three."],
+        events: [],
+      },
+      chapterState: {
+        focus: "Verify the ring clue state",
+        latestUserDirective: "Read brief.md and verify the ring clue state",
+        latestAssistantPlan: "Verified the missing-ring clue remains visible in chapter three.",
+        constraints: ["List only what the current files support"],
+      },
+      recentMessages: [],
+    });
+
+    expect(text).toBeDefined();
+    if (!text) {
+      throw new Error("expected evidence historical support to be defined");
+    }
+    const matches = text.match(/Verified the missing-ring clue remains visible in chapter three\./g) ?? [];
+    expect(matches).toHaveLength(1);
+  });
+
   it("suppresses stale rejected aliases from evidence historical support while keeping correction guardrails", () => {
     const text = buildSncEvidenceHistoricalSupportSection({
       version: 2,
@@ -423,7 +493,7 @@ describe("snc session state", () => {
     expect(text).toContain("Secondary continuity cues:");
     expect(text).toContain("Do not write 林燕 in the chapter recap.");
     expect(text).not.toContain("Keep 林燕 consistent in chapter four.");
-    expect(text).toContain("Recent messages (secondary context):");
+    expect(text).not.toContain("ASSISTANT: Do not write 林燕 in the chapter recap.");
     expect(text).not.toContain("ASSISTANT: Keep 林燕 consistent in chapter four.");
   });
 

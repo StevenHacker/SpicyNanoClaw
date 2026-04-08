@@ -224,6 +224,19 @@ Runtime effect:
 - session continuity and worker state remain session-scoped, so the main remaining cross-agent contamination risk is now closed by default
 - colleague branch intake was completed as a design read only; no early SNC runtime from that branch was merged into the current `M3` line
 
+### 16. M3 evidence historical residue filtering v1
+
+Record:
+
+- `research/321_snc_m3_evidence_historical_residue_filtering_v1.md`
+
+Runtime effect:
+
+- `evidence-grounding` historical support no longer keeps pure process / checklist / completion residue just because it appears in `latestAssistantPlan` or `continuityNotes`
+- legitimate continuity / evidence assistant cues still survive in historical support
+- duplicated assistant cues no longer render twice when `latestAssistantPlan` and `continuityNotes` carry the same sentence
+- assistant recent-message echoes that duplicate preserved secondary continuity cues are now suppressed to save budget and keep the truth surface cleaner
+
 ## What This Means Operationally
 
 If the tester is still validating `0.1.1`, those runs do **not** yet cover:

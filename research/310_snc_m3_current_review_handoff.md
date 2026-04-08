@@ -124,6 +124,18 @@ Main changes:
 - explicit shared durable pools now require `memoryNamespace`
 - continuity tests were updated to assert namespace-aware behavior instead of the old flat-catalog assumption
 
+### 9. Evidence historical residue filtering and dedupe
+
+- `data/working/openclaw-v2026.4.1-snc-v1/extensions/snc/src/session-state.ts`
+- `data/working/openclaw-v2026.4.1-snc-v1/extensions/snc/src/session-state.test.ts`
+
+Main changes:
+
+- `evidence-grounding` now drops pure process/checklist/completion residue from historical assistant support instead of letting it sneak in through `continuityNotes`
+- legitimate evidence/continuity assistant cues still survive in historical support
+- duplicate assistant cues no longer render twice when `latestAssistantPlan` and `continuityNotes` carry the same sentence
+- assistant recent-message echoes that duplicate preserved secondary cues are filtered out
+
 ## Review Intent
 
 The current review should prioritize:
@@ -147,8 +159,8 @@ Current local validation already run:
 Observed latest results:
 
 - shaping focus: `79/79`
-- continuity baseline: `35/35`
-- dispatcher focused vitest: `95/95`
+- continuity baseline: `37/37`
+- dispatcher focused vitest: `97/97`
 - workspace `tsc`: pass
 - standalone clean-host rehearsal: pass
 - `Milestone 3` gate: pass
@@ -164,5 +176,6 @@ Observed latest results:
 - `research/313_snc_m3_release_candidate.md`
 - `research/316_snc_m3_rc_latestness_and_clean_host_hardening_v1.md`
 - `research/319_snc_m3_agent_scoped_durable_memory_and_branch_intake.md`
+- `research/321_snc_m3_evidence_historical_residue_filtering_v1.md`
 - Post-`0.1.1` delta ledger:
   - `research/255_snc_post_0_1_1_change_ledger.md`

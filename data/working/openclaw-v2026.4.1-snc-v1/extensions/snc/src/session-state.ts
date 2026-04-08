@@ -58,6 +58,11 @@ const REPORT_STYLE_ASSISTANT_PATTERNS = [
   /\b(status update|progress update|handoff|deliverable|delivery note|checklist|submission|report mode)\b/i,
   /(?:\u5df2\u5b8c\u6210|\u5df2\u63d0\u4ea4|\u5df2\u5904\u7406|\u5df2\u9a8c\u8bc1|\u5df2\u5bf9\u9f50|\u5df2\u5151\u73b0|\u6c47\u62a5|\u72b6\u6001\u66f4\u65b0|\u4ea4\u4ed8|\u6e05\u5355|\u68c0\u67e5\u8868|\u91cc\u7a0b\u7891)/u,
 ];
+const EVIDENCE_SUBSTANCE_PATTERNS = [
+  /\b(remains?|still|visible|present|appears?|shown?|shows?|indicates?|supports?|contradicts?|matches?|found|observed|quoted?)\b/i,
+  /\b(clue|chapter|scene|beat|line|lines|paragraph|section|quote|quotes|brief|ledger|packet|file|files|material|materials|evidence)\b/i,
+  /(?:\u4ecd\u7136|\u4f9d\u7136|\u53ef\u89c1|\u51fa\u73b0|\u5728\u7b2c.{0,6}\u7ae0|\u7ebf\u7d22|\u8bc1\u636e|\u6750\u6599|\u6bb5\u843d|\u884c\u6587|\u6587\u4ef6)/u,
+];
 
 type SncSegment = {
   source: "user" | "assistant";
@@ -308,35 +313,41 @@ function filterAndSortCorrectionAwareEntries(
   entries: string[],
   pairs: SncCorrectionPair[],
 ): string[] {
-  if (entries.length === 0 || pairs.length === 0) {
+  if (entries.length === 0) {
     return entries;
   }
 
   return entries
     .map((entry, index) => {
       let supportScore = 0;
-      for (const pair of pairs) {
-        const mentionsPreferred = containsNormalizedPhrase(entry, pair.preferred);
-        const mentionsRejected = containsNormalizedPhrase(entry, pair.rejected);
-        if (
-          mentionsRejected &&
-          !mentionsPreferred &&
-          !isCorrectionGuardrailForRejected(entry, pair.rejected)
-        ) {
-          return null;
-        }
-        if (mentionsPreferred) {
-          supportScore += 2;
-        }
-        if (mentionsRejected && isCorrectionGuardrailForRejected(entry, pair.rejected)) {
-          supportScore += 1;
+      if (pairs.length > 0) {
+        for (const pair of pairs) {
+          const mentionsPreferred = containsNormalizedPhrase(entry, pair.preferred);
+          const mentionsRejected = containsNormalizedPhrase(entry, pair.rejected);
+          if (
+            mentionsRejected &&
+            !mentionsPreferred &&
+            !isCorrectionGuardrailForRejected(entry, pair.rejected)
+          ) {
+            return null;
+          }
+          if (mentionsPreferred) {
+            supportScore += 2;
+          }
+          if (mentionsRejected && isCorrectionGuardrailForRejected(entry, pair.rejected)) {
+            supportScore += 1;
+          }
         }
       }
       return { entry, index, supportScore };
     })
     .filter((entry): entry is { entry: string; index: number; supportScore: number } => Boolean(entry))
     .sort((left, right) => right.supportScore - left.supportScore || left.index - right.index)
-    .map((entry) => entry.entry);
+    .map((entry) => entry.entry)
+    .filter((entry, index, values) => {
+      const normalized = normalizeTextKey(entry);
+      return values.findIndex((candidate) => normalizeTextKey(candidate) === normalized) === index;
+    });
 }
 
 function normalizeEvents(value: unknown): SncLedgerEvent[] {
@@ -863,14 +874,21 @@ function collectEvidenceSecondaryContinuityCues(state: SncSessionState): string[
     state.chapterState.latestAssistantPlan,
     "evidence-grounding",
   );
+  const filteredContinuityNotes = state.storyLedger.continuityNotes
+    .slice(-2)
+    .filter((entry) => shouldRetainPromptFacingAssistantText(entry, "evidence-grounding"));
   return filterAndSortCorrectionAwareEntries([
     ...(assistantCue ? [assistantCue] : []),
-    ...state.storyLedger.continuityNotes.slice(-2),
+    ...filteredContinuityNotes,
   ], correctionPairs);
 }
 
 function isReportStyleAssistantText(text: string): boolean {
   return REPORT_STYLE_ASSISTANT_PATTERNS.some((pattern) => pattern.test(text));
+}
+
+function hasEvidenceHistoricalSubstance(text: string): boolean {
+  return hasAnyMatch(text, CONTINUITY_PATTERNS) || hasAnyMatch(text, EVIDENCE_SUBSTANCE_PATTERNS);
 }
 
 function shouldRetainPromptFacingAssistantText(
@@ -884,6 +902,15 @@ function shouldRetainPromptFacingAssistantText(
 
   if (classification === "assistant-ack" || classification === "assistant-meta") {
     return false;
+  }
+
+  if (mode === "evidence-grounding") {
+    if (classification === "assistant-plan" && !hasEvidenceHistoricalSubstance(text)) {
+      return false;
+    }
+    if (isReportStyleAssistantText(text) && !hasEvidenceHistoricalSubstance(text)) {
+      return false;
+    }
   }
 
   if (mode === "writing-prose" && isReportStyleAssistantText(text)) {
@@ -955,6 +982,7 @@ export function buildSncEvidenceHistoricalSupportSection(
 ): string | undefined {
   const secondaryContinuityCues = collectEvidenceSecondaryContinuityCues(state);
   const correctionPairs = extractCorrectionPairsFromCurrentSupport(state);
+  const secondaryCueKeys = new Set(secondaryContinuityCues.map((entry) => normalizeTextKey(entry)));
   const filteredRecentMessages = filterAndSortCorrectionAwareEntries(
     state.recentMessages.map((message) => `${message.role === "assistant" ? "ASSISTANT" : "USER"}: ${message.text}`),
     correctionPairs,
@@ -969,7 +997,7 @@ export function buildSncEvidenceHistoricalSupportSection(
       text: message.text,
     })),
     "evidence-grounding",
-  );
+  ).filter((message) => message.role !== "assistant" || !secondaryCueKeys.has(normalizeTextKey(message.text)));
   const hasHistoricalSupport =
     secondaryContinuityCues.length > 0 ||
     promptFacingRecentMessages.length > 0 ||
