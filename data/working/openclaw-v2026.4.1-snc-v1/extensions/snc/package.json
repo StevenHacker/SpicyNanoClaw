@@ -1,0 +1,30 @@
+{
+  "name": "openclaw-snc",
+  "version": "1.0.0",
+  "description": "SpicyNanoClaw context engine plugin for OpenClaw",
+  "type": "module",
+  "devDependencies": {
+    "openclaw": "workspace:*"
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.4.1"
+  },
+  "peerDependenciesMeta": {
+    "openclaw": {
+      "optional": true
+    }
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ],
+    "install": {
+      "npmSpec": "openclaw-snc",
+      "defaultChoice": "npm",
+      "minHostVersion": ">=2026.4.1"
+    },
+    "release": {
+      "publishToNpm": true
+    }
+  }
+}
