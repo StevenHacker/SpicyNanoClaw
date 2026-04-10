@@ -1,7 +1,7 @@
 param(
     [string]$ExternalHostSource = "C:\Users\Administrator\Documents\codex_project_1\data\external\openclaw-v2026.4.1",
     [string]$SharedNodeModulesSource = "C:\Users\Administrator\Documents\codex_project_1\data\working\openclaw-v2026.4.1-snc-v1\node_modules",
-    [string]$PackagePath = "C:\Users\Administrator\Documents\codex_project_1\data\releases\snc\openclaw-snc-0.2.0.tgz",
+    [string]$PackagePath = "C:\Users\Administrator\Documents\codex_project_1\data\releases\snc\openclaw-snc-1.0.1.tgz",
     [string]$RehearsalRoot = "C:\Users\Administrator\Documents\codex_project_1\data\rehearsal\snc-clean-host-v1",
     [string]$NodeHome = "C:\Users\Administrator\tools\node-v22.14.0-win-x64"
 )

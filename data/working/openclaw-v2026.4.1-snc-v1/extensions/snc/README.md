@@ -8,10 +8,10 @@ It is also designed not to fight ordinary OpenClaw assistant work. When you do n
 
 ## Fastest Install
 
-If you already have the release-candidate package:
+If you already have the release package:
 
 ```bash
-openclaw plugins install ./openclaw-snc-0.2.0.tgz
+openclaw plugins install ./openclaw-snc-1.0.1.tgz
 ```
 
 Then enable it:
@@ -101,14 +101,14 @@ If you want the minimal useful setup for real continuity, start here:
 }
 ```
 
-That is the recommended `Milestone 3` base profile:
+That is the recommended `v1.0.1` base profile:
 
 - persistent continuity and durable-memory reuse through `stateDir`
 - neutral assistant behavior by default through `specializationMode: "auto"`
 - no hook-layer policy changes unless you explicitly opt in
 
-By default, SNC isolates cross-session durable memory by agent-family when a `sessionKey` is present.
-That means two different agents can share one `stateDir` without automatically sharing the same long-horizon memory catalog.
+By default, SNC now isolates per-session continuity, compaction summaries, and worker ledgers by exact session scope, and isolates durable memory by exact agent key when a `sessionKey` is present.
+That means two different agents can share one `stateDir` without automatically sharing the same long-horizon memory catalog, helper residue, or summary lane.
 If you want to override that, set:
 
 ```json5
@@ -120,6 +120,21 @@ Then add these when you want richer project-specific writing context:
 - `briefFile`
 - `ledgerFile`
 - `packetDir`
+
+If you also want SNC to actively steer prose away from "说明书感", enable the optional writing style overlay. It is separate from memory and only activates on `writing-prose` turns.
+
+For multi-agent OpenClaw runs, SNC also defaults helpers to a bounded lane:
+
+- helper sessions keep their own summaries and compaction state
+- helper sessions do not inherit the writing style overlay unless you explicitly allow it
+- helper sessions load `briefFile` / `ledgerFile` but skip broad packet fan-out by default
+
+Built-in first-party profile ids:
+
+- `mist-suspense`
+- `streetwise-banter`
+- `bustling-intrigue`
+- `pressure-escalation`
 
 If the session is mostly normal engineering or daily assistant work, set:
 
@@ -146,7 +161,98 @@ hooks: {
 }
 ```
 
-## What Milestone 3 Actually Does
+## Optional Writing Style Overlay
+
+The style overlay is a writing-only surface layer:
+
+- off for `general` assistant turns
+- off for `evidence-grounding` turns by default
+- on for `writing-prose` turns when a profile is configured or auto-selected
+- never persisted into SNC durable memory or worker state
+
+Recommended safe starter config:
+
+```json5
+style: {
+  enabled: true,
+  mode: "auto",
+  intensity: 0.72,
+  strictness: 0.82,
+  maxExamples: 1
+}
+```
+
+The overlay is inspired by anti-AI-writing guidance, not by paragraph quotas:
+
+- object/action before judgment
+- scene before explanation
+- uneven sentence speed over polished symmetry
+- implication over tidy takeaway
+- no "one image / one feeling / one hook" checklist writing
+
+Pin a built-in profile:
+
+```json5
+style: {
+  enabled: true,
+  mode: "profile",
+  profileId: "mist-suspense"
+}
+```
+
+Load an external desensitized profile:
+
+```json5
+style: {
+  enabled: true,
+  mode: "profile",
+  profileFile: "./docs/snc/styles/mist-profile.json"
+}
+```
+
+This layer is for:
+
+- prose vitality
+- anti-report / anti-checklist / anti-review voice
+- scene-first motion
+- sensory anchoring
+- dialogue texture
+
+It is not allowed to override:
+
+- current evidence
+- contradiction suppression
+- explicit user constraints
+- anti-fabrication behavior
+
+External profile rule:
+
+- external profiles must be desensitized, not raw-source
+- SNC only accepts external profiles with `safety_mode: "desensitized"`
+- external profiles must provide `copyright_guardrails.operational_prompt_fields` and `research_only_fields`
+- SNC only projects the external fields that the profile explicitly marks as safe for live prompt use
+
+## Agent Isolation Defaults
+
+The safe default config is:
+
+```json5
+agentIsolation: {
+  enabled: true,
+  durableMemoryScope: "agent",
+  helperStyleOverlay: false,
+  helperArtifacts: "bounded"
+}
+```
+
+Use this to keep different agents from overlapping in:
+
+- continuity state
+- compaction summaries
+- helper fold-back notes
+- durable-memory projections
+
+## What v1.0.1 Actually Does
 
 - installs as a normal OpenClaw plugin
 - activates through `plugins.slots.contextEngine`
@@ -162,15 +268,16 @@ hooks: {
 - projects bounded worker launch, worker diagnostics, and worker controller sections when worker state exists
 - supports `specializationMode: auto | general | writing` so SNC does not force writing framing onto every session
 - hardens writing-output discipline so direct drafting turns keep process chatter and report-mode language out of the draft
+- adds an optional writing-only style overlay with built-in archetypes and external profile loading
 - strengthens multilingual continuity by using Unicode-aware dedupe and correction-aware carry-forward
 - keeps host compaction and host worker execution ownership in OpenClaw
 
 ## Install Options
 
-Release-candidate package:
+Release package:
 
 ```bash
-openclaw plugins install ./openclaw-snc-0.2.0.tgz
+openclaw plugins install ./openclaw-snc-1.0.1.tgz
 ```
 
 Local linked source inside an OpenClaw workspace:
@@ -203,6 +310,13 @@ openclaw plugins install openclaw-snc
           stateDir: "./.snc/state",
           specializationMode: "writing",
           maxSectionBytes: 24576,
+          style: {
+            enabled: true,
+            mode: "auto",
+            intensity: 0.72,
+            strictness: 0.82,
+            maxExamples: 1
+          },
           hooks: {
             enabled: true,
             targets: [
@@ -251,6 +365,14 @@ If you want SNC's full current feature set in OpenClaw, use one explicit config 
             projectionLimit: 3,
             projectionMinimumScore: 3
           },
+          style: {
+            enabled: true,
+            mode: "profile",
+            profileId: "mist-suspense",
+            intensity: 0.8,
+            strictness: 0.9,
+            maxExamples: 1
+          },
           hooks: {
             enabled: true,
             targets: [
@@ -291,7 +413,7 @@ It is trying to help OpenClaw hold narrative shape longer:
 
 ## Explicit Defers
 
-Milestone 3 does not claim:
+v1.0.1 does not claim:
 
 - host memory-slot ownership
 - public MCP export for SNC helper tools
@@ -301,12 +423,30 @@ Milestone 3 does not claim:
 - resume from the exact point of interruption
 - deep runtime rewrites of OpenClaw
 
+## Design Intent
+
+SNC is a bounded specialization layer, not a replacement host.
+
+Its design intent is:
+
+1. current evidence stays above memory
+2. same-session continuity stays above cross-session durable memory
+3. creative style stays above truth planes, not inside them
+4. OpenClaw keeps host ownership wherever the host boundary should remain authoritative
+
+That is why:
+
+- style overlay is writing-only
+- external profiles must be desensitized
+- durable memory is bounded and suppressible
+- operator truth matters as much as raw capability
+
 ## Validation
 
-Inside the engineering workspace, the milestone gate is:
+Inside the engineering workspace, the release gate is:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts/validate_snc_milestone3.ps1
+powershell -ExecutionPolicy Bypass -File scripts/validate_snc_v1.ps1
 ```
 
 The clean-host delivery rehearsal gate is:
@@ -315,7 +455,7 @@ The clean-host delivery rehearsal gate is:
 powershell -ExecutionPolicy Bypass -File scripts/validate_snc_clean_host_rehearsal.ps1
 ```
 
-The milestone gate checks:
+The v1.0.1 gate checks:
 
 - focused SNC validation
 - dispatcher validation
@@ -338,3 +478,14 @@ openclaw config validate --json
 openclaw plugins inspect snc --json
 openclaw plugins doctor
 ```
+
+## Post-v1 TODO
+
+The next bounded implementation wave is:
+
+1. faster SNC-scoped local validation
+2. a separate code-context plane for coding-task grounding
+3. an operator-truth inspect surface
+4. style overlay v2 and bounded writing/inspiration workflow work
+
+This should target `v1.1.0`, not another milestone-style public version line.

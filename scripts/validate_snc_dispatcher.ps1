@@ -57,7 +57,7 @@ try {
 
     if (-not $SkipTests) {
         Invoke-Step -Label "Focused SNC Vitest" -Action {
-            & $PnpmCmd exec vitest run extensions/snc/src/session-state.test.ts extensions/snc/src/engine.test.ts extensions/snc/src/hook-scaffold.test.ts extensions/snc/src/worker-policy.test.ts extensions/snc/src/worker-diagnostics.test.ts extensions/snc/src/worker-execution.test.ts extensions/snc/src/worker-launch-intent.test.ts extensions/snc/src/worker-state.test.ts
+            & $PnpmCmd exec vitest run extensions/snc/src/session-state.test.ts extensions/snc/src/durable-memory.test.ts extensions/snc/src/engine.test.ts extensions/snc/src/hook-scaffold.test.ts extensions/snc/src/task-posture.test.ts extensions/snc/src/worker-policy.test.ts extensions/snc/src/worker-diagnostics.test.ts extensions/snc/src/worker-execution.test.ts extensions/snc/src/worker-launch-intent.test.ts extensions/snc/src/worker-state.test.ts
         }
     }
 

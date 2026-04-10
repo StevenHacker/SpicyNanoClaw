@@ -20,7 +20,7 @@ import {
 } from "./durable-memory.js";
 import { SncContextEngine } from "./engine.js";
 import type { SncResolvedConfig } from "./config.js";
-import { persistSncSessionState } from "./session-state.js";
+import { loadSncSessionState, persistSncSessionState } from "./session-state.js";
 import { applySncWorkerLaunchResult, prepareSncWorkerLaunch } from "./worker-execution.js";
 import {
   buildSncWorkerJobContract,
@@ -45,6 +45,19 @@ function createConfig(overrides: Partial<SncResolvedConfig> = {}): SncResolvedCo
       staleEntryDays: 30,
       projectionLimit: 3,
       projectionMinimumScore: 3,
+    },
+    agentIsolation: {
+      enabled: true,
+      durableMemoryScope: "agent",
+      helperStyleOverlay: false,
+      helperArtifacts: "bounded",
+    },
+    style: {
+      enabled: false,
+      mode: "off",
+      intensity: 0.72,
+      strictness: 0.82,
+      maxExamples: 1,
     },
     maxSectionBytes: 24_576,
     hooks: {
@@ -178,6 +191,8 @@ describe("SncContextEngine", () => {
     expect(assembled.systemPromptAddition).toContain("Project brief");
     expect(assembled.systemPromptAddition).toContain("## scene");
     expect(assembled.systemPromptAddition).toContain("Scene packet");
+    expect(assembled.systemPromptAddition).toContain("## Agent scope");
+    expect(assembled.systemPromptAddition).toContain("sessionScope: agent:main:story#session-1");
     expect(assembled.systemPromptAddition).toContain("## Writing output discipline");
     expect(assembled.systemPromptAddition).toContain("Current turn looks like direct drafting.");
     expect(assembled.systemPromptAddition).toContain("## Session snapshot");
@@ -193,6 +208,178 @@ describe("SncContextEngine", () => {
       "Please continue chapter one, keep a noir tone, and avoid exposition.",
     );
     expect(assembled.systemPromptAddition).toContain("kept latest beats");
+  });
+
+  it("projects a writing style overlay only on writing-prose turns", async () => {
+    const root = createTempDir();
+    const stateDir = path.join(root, ".snc-state");
+
+    const engine = new SncContextEngine(
+      createConfig({
+        stateDir,
+        specializationMode: "writing",
+        style: {
+          enabled: true,
+          mode: "auto",
+          intensity: 0.8,
+          strictness: 0.9,
+          maxExamples: 1,
+        },
+      } as Partial<SncResolvedConfig>),
+      {
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+      },
+    );
+
+    await engine.afterTurn({
+      sessionId: "session-style-1",
+      sessionKey: "agent:main:story",
+      sessionFile: path.join(root, "session-style.jsonl"),
+      messages: [
+        message("user", "继续写这个悬疑开场，雾感一点，先写秩序，再让异常慢慢渗出来。", 1),
+      ],
+      prePromptMessageCount: 0,
+    });
+
+    const assembled = await engine.assemble({
+      sessionId: "session-style-1",
+      sessionKey: "agent:main:story",
+      messages: [
+        message("user", "继续写这个悬疑开场，雾感一点，先写秩序，再让异常慢慢渗出来。", 2),
+      ],
+    });
+
+    expect(assembled.systemPromptAddition).toContain("## Writing style overlay");
+    expect(assembled.systemPromptAddition).toContain("Profile: Mist suspense (mist-suspense)");
+    expect(assembled.systemPromptAddition).toContain("Taboo patterns (highest priority):");
+    expect(assembled.systemPromptAddition).toContain("Anti-manual voice:");
+    expect(assembled.systemPromptAddition).toContain("Human texture discipline:");
+
+    const sessionState = await loadSncSessionState({
+      stateDir,
+      sessionId: "session-style-1",
+      sessionKey: "agent:main:story",
+    });
+    expect(JSON.stringify(sessionState)).not.toContain("The milkman had already knocked on three doors");
+
+    const durableCatalog = await loadSncDurableMemoryCatalog({
+      stateDir,
+      namespace: resolveSncDurableMemoryNamespace({
+        configuredNamespace: undefined,
+        sessionId: "session-style-1",
+        sessionKey: "agent:main:story",
+      }),
+    });
+    expect(JSON.stringify(durableCatalog)).not.toContain("The milkman had already knocked on three doors");
+  });
+
+  it("keeps the style overlay off for evidence-first and general-assistant turns", async () => {
+    const root = createTempDir();
+    const stateDir = path.join(root, ".snc-state");
+
+    const writingEngine = new SncContextEngine(
+      createConfig({
+        stateDir,
+        specializationMode: "writing",
+        style: {
+          enabled: true,
+          mode: "auto",
+        },
+      } as Partial<SncResolvedConfig>),
+      {
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+      },
+    );
+
+    const evidenceAssembled = await writingEngine.assemble({
+      sessionId: "session-style-2",
+      sessionKey: "agent:main:story",
+      messages: [
+        message(
+          "user",
+          "Read the report and list the top three continuity risks according to the workspace docs.",
+          1,
+        ),
+      ],
+    });
+
+    expect(evidenceAssembled.systemPromptAddition).not.toContain("## Writing style overlay");
+
+    const generalEngine = new SncContextEngine(
+      createConfig({
+        stateDir,
+        specializationMode: "general",
+        style: {
+          enabled: true,
+          mode: "auto",
+        },
+      } as Partial<SncResolvedConfig>),
+      {
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+      },
+    );
+
+    const generalAssembled = await generalEngine.assemble({
+      sessionId: "session-style-3",
+      sessionKey: "agent:main:general",
+      messages: [
+        message("user", "继续写这个热血场景，别太像说明书。", 1),
+      ],
+    });
+
+    expect(generalAssembled.systemPromptAddition ?? "").not.toContain("## Writing style overlay");
+  });
+
+  it("keeps helper-agent sessions on a bounded context lane by default", async () => {
+    const root = createTempDir();
+    const briefFile = path.join(root, "brief.md");
+    const packetDir = path.join(root, "packets");
+    const stateDir = path.join(root, ".snc-state");
+
+    mkdirSync(packetDir, { recursive: true });
+    writeFileSync(briefFile, "Primary brief", "utf8");
+    writeFileSync(path.join(packetDir, "packet-a.md"), "Packet A", "utf8");
+
+    const engine = new SncContextEngine(
+      createConfig({
+        briefFile,
+        packetDir,
+        stateDir,
+        specializationMode: "writing",
+        style: {
+          enabled: true,
+          mode: "auto",
+          intensity: 0.8,
+          strictness: 0.9,
+          maxExamples: 1,
+        },
+      }),
+      {
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+      },
+    );
+
+    const assembled = await engine.assemble({
+      sessionId: "session-helper-1",
+      sessionKey: "agent:main:subagent:child-7",
+      messages: [
+        message("user", "Continue the suspense passage directly in prose.", 1),
+      ],
+    });
+
+    expect(assembled.systemPromptAddition).toContain("## Agent scope");
+    expect(assembled.systemPromptAddition).toContain("role: helper");
+    expect(assembled.systemPromptAddition).toContain("Primary brief");
+    expect(assembled.systemPromptAddition).not.toContain("## packet a");
+    expect(assembled.systemPromptAddition).not.toContain("## Writing style overlay");
   });
 
   it("shrinks packet-dir residue before critical SNC sections under prompt pressure", async () => {
@@ -764,7 +951,7 @@ describe("SncContextEngine", () => {
     expect(assembled.systemPromptAddition).toContain("Preserve the ring clue and the chapter three payoff.");
   });
 
-  it("keeps durable memory isolated across agent families by default", async () => {
+  it("keeps durable memory isolated across agent scopes by default", async () => {
     const root = createTempDir();
     const stateDir = path.join(root, ".snc-state");
     const engine = new SncContextEngine(

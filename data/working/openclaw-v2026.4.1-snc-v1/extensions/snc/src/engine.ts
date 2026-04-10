@@ -13,6 +13,10 @@ import {
   type SncSpecializationMode,
 } from "./config.js";
 import {
+  buildSncAgentScopeSection,
+  resolveSncAgentScope,
+} from "./agent-scope.js";
+import {
   buildSncDurableMemoryDiagnosticsSection,
   buildSncDurableMemorySection,
   harvestSncDurableMemoryEntries,
@@ -37,6 +41,10 @@ import {
   type SncOutputDisciplineContext,
   type SncTaskPostureContext,
 } from "./task-posture.js";
+import {
+  buildSncStyleOverlaySection,
+  resolveSncStyleOverlay,
+} from "./style-overlay.js";
 import { shapeSncTranscriptMessage } from "./transcript-shaping.js";
 import {
   applySncWorkerLaunchIntent,
@@ -49,7 +57,7 @@ import {
   loadSncWorkerState,
 } from "./worker-state.js";
 
-const SNC_ENGINE_VERSION = "0.2.0";
+const SNC_ENGINE_VERSION = "1.0.1";
 const RECENT_TRANSCRIPT_MESSAGE_WINDOW = 8;
 const RECENT_DURABLE_MEMORY_MESSAGE_WINDOW = 4;
 const MAX_MAINTENANCE_REWRITES = 1;
@@ -359,9 +367,16 @@ function buildSystemPromptAddition(
 function buildSncCompactionInstructions(
   state: SncSessionState | null,
   framingMode: SncRuntimeFramingMode,
+  scopeKey: string,
+  agentRole: "primary" | "helper",
   customInstructions?: string,
 ): string | undefined {
   const lines: string[] = [];
+  lines.push(`- agent scope: ${scopeKey}`);
+  lines.push("- do not merge or flatten sibling-agent summaries into this scope");
+  if (agentRole === "helper") {
+    lines.push("- helper scope: preserve only helper-local findings and carry-forward for this child session");
+  }
   if (state?.chapterState.focus) {
     lines.push(`- current focus: ${state.chapterState.focus}`);
   }
@@ -579,7 +594,11 @@ export class SncContextEngine implements ContextEngine {
     prompt?: string;
   }) {
     const framingMode = resolveSncRuntimeFramingMode(this.config);
-    const sections = await this.loadSections();
+    const agentScope = resolveSncAgentScope({
+      sessionId: params.sessionId,
+      sessionKey: params.sessionKey,
+    });
+    const sections = await this.loadSections(agentScope);
     const sessionState = await loadSncSessionState({
       stateDir: this.config.stateDir,
       sessionId: params.sessionId,
@@ -611,11 +630,51 @@ export class SncContextEngine implements ContextEngine {
       taskPosture,
     });
     const outputDisciplineBody = buildSncOutputDisciplineSection(outputDiscipline);
+    const hasOutputDiscipline = Boolean(outputDisciplineBody);
     if (outputDisciplineBody) {
       sections.push({
         title: "Writing output discipline",
         body: outputDisciplineBody,
         budgetClass: "critical",
+      });
+    }
+    const styleOverlay = await resolveSncStyleOverlay({
+      config: this.config.style,
+      framingMode,
+      taskPosture,
+      outputDiscipline,
+      agentRole: agentScope.role,
+      allowHelperStyleOverlay: this.config.agentIsolation.helperStyleOverlay,
+      messages: params.messages,
+    }).catch((error) => {
+      this.warnOnce(
+        `style-read:${params.sessionId}`,
+        `SNC style profile read failed for ${params.sessionId} (${String(error)})`,
+      );
+      return undefined;
+    });
+    const shouldProjectAgentScope =
+      agentScope.role === "helper" ||
+      sections.length > 0 ||
+      Boolean(taskPostureBody) ||
+      hasOutputDiscipline ||
+      Boolean(styleOverlay) ||
+      Boolean(sessionState);
+    if (shouldProjectAgentScope) {
+      sections.push({
+        title: "Agent scope",
+        body: buildSncAgentScopeSection(agentScope),
+        budgetClass: "critical",
+      });
+    }
+    if (styleOverlay) {
+      sections.push({
+        title: "Writing style overlay",
+        body: buildSncStyleOverlaySection({
+          overlay: styleOverlay,
+          config: this.config.style,
+        }),
+        budgetClass: "standard",
       });
     }
 
@@ -916,6 +975,10 @@ export class SncContextEngine implements ContextEngine {
     runtimeContext?: ContextEngineRuntimeContext;
   }) {
     const framingMode = resolveSncRuntimeFramingMode(this.config);
+    const agentScope = resolveSncAgentScope({
+      sessionId: params.sessionId,
+      sessionKey: params.sessionKey,
+    });
     const sessionState = await loadSncSessionState({
       stateDir: this.config.stateDir,
       sessionId: params.sessionId,
@@ -931,6 +994,8 @@ export class SncContextEngine implements ContextEngine {
     const customInstructions = buildSncCompactionInstructions(
       sessionState,
       framingMode,
+      agentScope.sessionScopeKey,
+      agentScope.role,
       params.customInstructions,
     );
 
@@ -940,13 +1005,19 @@ export class SncContextEngine implements ContextEngine {
     });
   }
 
-  private async loadSections(): Promise<SncContextSection[]> {
+  private async loadSections(
+    agentScope = resolveSncAgentScope({ sessionId: "session" }),
+  ): Promise<SncContextSection[]> {
     const sections: SncContextSection[] = [];
+    const helperBounded =
+      this.config.agentIsolation.enabled &&
+      agentScope.role === "helper" &&
+      this.config.agentIsolation.helperArtifacts === "bounded";
 
     const orderedFiles = [
       this.config.briefFile,
       this.config.ledgerFile,
-      ...this.config.packetFiles,
+      ...(helperBounded ? [] : this.config.packetFiles),
     ].filter((filePath): filePath is string => Boolean(filePath));
 
     for (const filePath of orderedFiles) {
@@ -962,7 +1033,7 @@ export class SncContextEngine implements ContextEngine {
       }
     }
 
-    if (this.config.packetDir) {
+    if (this.config.packetDir && !helperBounded) {
       const dirSections = await this.loadSectionsFromDirectory(this.config.packetDir);
       sections.push(...dirSections);
     }
@@ -1028,11 +1099,25 @@ export class SncContextEngine implements ContextEngine {
   }
 
   private resolveDurableMemoryNamespace(sessionId: string, sessionKey?: string): string | undefined {
-    return resolveSncDurableMemoryNamespace({
-      sessionId,
-      sessionKey,
-      configuredNamespace: this.config.memoryNamespace,
-    });
+    if (this.config.memoryNamespace) {
+      return this.config.memoryNamespace;
+    }
+
+    const scope = resolveSncAgentScope({ sessionId, sessionKey });
+    if (!this.config.agentIsolation.enabled) {
+      return resolveSncDurableMemoryNamespace({
+        sessionId,
+        sessionKey,
+        configuredNamespace: undefined,
+      });
+    }
+    if (this.config.agentIsolation.durableMemoryScope === "shared") {
+      return undefined;
+    }
+    if (this.config.agentIsolation.durableMemoryScope === "family") {
+      return scope.familyKey;
+    }
+    return scope.agentKey;
   }
 }
 

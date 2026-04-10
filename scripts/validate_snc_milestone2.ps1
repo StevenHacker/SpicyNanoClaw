@@ -43,7 +43,7 @@ if (-not (Test-Path $HostCopyPath)) {
 $RepositoryRoot = "C:\Users\Administrator\Documents\codex_project_1"
 $PluginPath = Join-Path $HostCopyPath "extensions\snc"
 $ReleaseRoot = Join-Path $RepositoryRoot "data\releases\snc"
-$PackagePath = Join-Path $ReleaseRoot "openclaw-snc-0.1.0.tgz"
+$PackagePath = Join-Path $ReleaseRoot "openclaw-snc-0.1.1.tgz"
 $NodeExe = Join-Path $NodeHome "node.exe"
 $PnpmCmd = Join-Path $NodeHome "pnpm.cmd"
 

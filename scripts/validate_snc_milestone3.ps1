@@ -43,7 +43,7 @@ if (-not (Test-Path $HostCopyPath)) {
 $RepositoryRoot = "C:\Users\Administrator\Documents\codex_project_1"
 $PluginPath = Join-Path $HostCopyPath "extensions\snc"
 $ReleaseRoot = Join-Path $RepositoryRoot "data\releases\snc"
-$PackagePath = Join-Path $ReleaseRoot "openclaw-snc-0.2.0.tgz"
+$PackagePath = Join-Path $ReleaseRoot "openclaw-snc-1.0.1.tgz"
 $NodeExe = Join-Path $NodeHome "node.exe"
 $PnpmCmd = Join-Path $NodeHome "pnpm.cmd"
 
@@ -61,10 +61,10 @@ $env:PATH = "$NodeHome;$env:PATH"
 
 Push-Location $RepositoryRoot
 try {
-    Write-Host "[milestone3] host copy: $HostCopyPath"
-    Write-Host "[milestone3] plugin path: $PluginPath"
-    Write-Host "[milestone3] node home: $NodeHome"
-    Write-Host "[milestone3] heap mb: $HeapMb"
+    Write-Host "[v1] host copy: $HostCopyPath"
+    Write-Host "[v1] plugin path: $PluginPath"
+    Write-Host "[v1] node home: $NodeHome"
+    Write-Host "[v1] heap mb: $HeapMb"
 
     if (-not $SkipFocus) {
         Invoke-Step -Label "Focused SNC Validation" -Action {
@@ -107,7 +107,7 @@ try {
     }
 
     Write-Host ""
-    Write-Host "SNC Milestone 3 validation completed successfully." -ForegroundColor Green
+    Write-Host "SNC v1.0.1 validation completed successfully." -ForegroundColor Green
 } finally {
     Pop-Location
 }

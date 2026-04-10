@@ -4,6 +4,11 @@ import path from "node:path";
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import { normalizeHyphenSlug } from "openclaw/plugin-sdk/core";
 import {
+  buildSncScopedFilename,
+  resolveSncAgentScope,
+  type SncAgentRole,
+} from "./agent-scope.js";
+import {
   applySncWorkerFollowUpResult,
   applySncWorkerLaunchResult,
   buildSncWorkerResultFromCompletionEvent,
@@ -35,7 +40,7 @@ import {
   type SncWorkerTrackingRecord,
 } from "./worker-policy.js";
 
-const WORKER_STATE_VERSION = 1;
+const WORKER_STATE_VERSION = 2;
 const MAX_CONSUMED_EVENT_KEYS = 48;
 const MAX_RECENT_FOLD_BACKS = 6;
 const MAX_FOLD_BACK_NOTES = 3;
@@ -46,6 +51,10 @@ export type SncWorkerState = {
   version: number;
   sessionId: string;
   sessionKey?: string;
+  agentScopeKey: string;
+  agentKey: string;
+  agentFamilyKey: string;
+  agentRole: SncAgentRole;
   updatedAt: string;
   controllerState: SncWorkerControllerState;
   recentFoldBacks: SncWorkerFoldBack[];
@@ -72,6 +81,7 @@ export type SncApplyWorkerCompletionEventsInput = {
 
 export type SncApplyWorkerSpawnedLifecycleInput = {
   stateDir?: string;
+  requesterSessionId?: string;
   requesterSessionKey?: string;
   childSessionKey: string;
   runId?: string;
@@ -80,6 +90,7 @@ export type SncApplyWorkerSpawnedLifecycleInput = {
 
 export type SncApplyWorkerEndedLifecycleInput = {
   stateDir?: string;
+  requesterSessionId?: string;
   requesterSessionKey?: string;
   targetSessionKey: string;
   runId?: string;
@@ -531,15 +542,136 @@ function normalizeFoldBacks(value: unknown): SncWorkerFoldBack[] {
     .slice(-MAX_RECENT_FOLD_BACKS);
 }
 
-function buildStateFilename(sessionId: string, sessionKey?: string): string {
+function buildLegacyStateFilename(sessionId: string, sessionKey?: string): string {
   const rawLabel = sessionKey?.trim() || sessionId.trim() || "session";
   const slug = normalizeHyphenSlug(rawLabel) || "session";
   const hash = createHash("sha1").update(rawLabel).digest("hex").slice(0, 10);
   return `${slug}-${hash}.json`;
 }
 
-function buildStatePath(stateDir: string, sessionId: string, sessionKey?: string): string {
-  return path.join(stateDir, "workers", buildStateFilename(sessionId, sessionKey));
+function buildStatePath(stateDir: string, scopeKey: string): string {
+  return path.join(stateDir, "workers", buildSncScopedFilename(scopeKey));
+}
+
+function buildLegacyStatePath(stateDir: string, sessionId: string, sessionKey?: string): string {
+  return path.join(stateDir, "workers", buildLegacyStateFilename(sessionId, sessionKey));
+}
+
+type SncWorkerStateIndexEntry = {
+  sessionId: string;
+  sessionScopeKey: string;
+  updatedAt: string;
+};
+
+type SncWorkerStateIndex = {
+  version: number;
+  sessionKey: string;
+  entries: SncWorkerStateIndexEntry[];
+};
+
+function buildStateAliasFilename(sessionKey: string): string {
+  const rawLabel = sessionKey.trim() || "session";
+  const slug = normalizeHyphenSlug(rawLabel) || "session";
+  const hash = createHash("sha1").update(rawLabel).digest("hex").slice(0, 10);
+  return `${slug}-${hash}.json`;
+}
+
+function buildStateAliasPath(stateDir: string, sessionKey: string): string {
+  return path.join(stateDir, "workers", "aliases", buildStateAliasFilename(sessionKey));
+}
+
+function normalizeWorkerStateIndexEntry(value: unknown): SncWorkerStateIndexEntry | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+
+  const sessionId = normalizeOptionalString((value as { sessionId?: unknown }).sessionId);
+  const sessionScopeKey = normalizeOptionalString(
+    (value as { sessionScopeKey?: unknown }).sessionScopeKey,
+  );
+  const updatedAt = normalizeOptionalString((value as { updatedAt?: unknown }).updatedAt);
+  if (!sessionId || !sessionScopeKey || !updatedAt) {
+    return null;
+  }
+
+  return {
+    sessionId,
+    sessionScopeKey,
+    updatedAt,
+  };
+}
+
+function normalizeWorkerStateIndex(value: unknown): SncWorkerStateIndex | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+
+  const sessionKey = normalizeOptionalString((value as { sessionKey?: unknown }).sessionKey);
+  if (!sessionKey) {
+    return null;
+  }
+
+  const entriesValue = (value as { entries?: unknown }).entries;
+  if (Array.isArray(entriesValue)) {
+    const entries = entriesValue
+      .map((entry) => normalizeWorkerStateIndexEntry(entry))
+      .filter((entry): entry is SncWorkerStateIndexEntry => Boolean(entry));
+    if (entries.length === 0) {
+      return null;
+    }
+    return {
+      version:
+        typeof (value as { version?: unknown }).version === "number"
+          ? (value as { version: number }).version
+          : 2,
+      sessionKey,
+      entries,
+    };
+  }
+
+  // Backward compatibility for the earlier single-alias format.
+  const legacyEntry = normalizeWorkerStateIndexEntry(value);
+  if (!legacyEntry) {
+    return null;
+  }
+  return {
+    version:
+      typeof (value as { version?: unknown }).version === "number"
+        ? (value as { version: number }).version
+        : 1,
+    sessionKey,
+    entries: [legacyEntry],
+  };
+}
+
+function mergeWorkerStateIndexEntries(
+  existing: SncWorkerStateIndexEntry[],
+  incoming: SncWorkerStateIndexEntry,
+): SncWorkerStateIndexEntry[] {
+  const merged = new Map<string, SncWorkerStateIndexEntry>();
+  for (const entry of [...existing, incoming]) {
+    merged.set(entry.sessionScopeKey, entry);
+  }
+  return [...merged.values()]
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+    .slice(0, 24);
+}
+
+async function readWorkerStateIndex(
+  stateDir: string,
+  sessionKey?: string,
+): Promise<SncWorkerStateIndex | null> {
+  const normalizedSessionKey = normalizeOptionalString(sessionKey);
+  if (!normalizedSessionKey) {
+    return null;
+  }
+
+  try {
+    const raw = await readFile(buildStateAliasPath(stateDir, normalizedSessionKey), "utf8");
+    return normalizeWorkerStateIndex(JSON.parse(raw) as unknown);
+  } catch {
+    return null;
+  }
 }
 
 function buildCompletionEventKey(event: SncParsedWorkerCompletionEvent): string {
@@ -567,21 +699,6 @@ function mergeFoldBacks(existing: SncWorkerFoldBack[], incoming: SncWorkerFoldBa
   return [...merged.values()].slice(-MAX_RECENT_FOLD_BACKS);
 }
 
-function resolveWorkerStateLookup(params: {
-  sessionId?: string;
-  sessionKey?: string;
-}): { sessionId: string; sessionKey?: string } | null {
-  const sessionKey = normalizeOptionalString(params.sessionKey);
-  const sessionId = normalizeOptionalString(params.sessionId) ?? sessionKey;
-  if (!sessionId) {
-    return null;
-  }
-  return {
-    sessionId,
-    ...(sessionKey ? { sessionKey } : {}),
-  };
-}
-
 function mergeConsumedKeys(existing: string[], incoming: string[]): string[] {
   const merged = new Map<string, string>();
   for (const entry of [...existing, ...incoming]) {
@@ -599,10 +716,15 @@ function buildEmptyWorkerState(params: {
   sessionKey?: string;
   updatedAt?: string;
 }): SncWorkerState {
+  const scope = resolveSncAgentScope(params);
   return {
     version: WORKER_STATE_VERSION,
     sessionId: params.sessionId,
     ...(params.sessionKey ? { sessionKey: params.sessionKey } : {}),
+    agentScopeKey: scope.sessionScopeKey,
+    agentKey: scope.agentKey,
+    agentFamilyKey: scope.familyKey,
+    agentRole: scope.role,
     updatedAt: params.updatedAt ?? new Date().toISOString(),
     controllerState: createSncWorkerControllerState({
       controllerSessionKey: params.sessionKey,
@@ -627,6 +749,10 @@ function normalizeWorkerState(
     normalizeOptionalString((value as { sessionId?: unknown }).sessionId) ?? params.sessionId;
   const sessionKey =
     normalizeOptionalString((value as { sessionKey?: unknown }).sessionKey) ?? params.sessionKey;
+  const scope = resolveSncAgentScope({
+    sessionId,
+    sessionKey,
+  });
 
   return {
     version:
@@ -635,6 +761,20 @@ function normalizeWorkerState(
         : WORKER_STATE_VERSION,
     sessionId,
     ...(sessionKey ? { sessionKey } : {}),
+    agentScopeKey:
+      normalizeOptionalString((value as { agentScopeKey?: unknown }).agentScopeKey) ??
+      scope.sessionScopeKey,
+    agentKey:
+      normalizeOptionalString((value as { agentKey?: unknown }).agentKey) ??
+      scope.agentKey,
+    agentFamilyKey:
+      normalizeOptionalString((value as { agentFamilyKey?: unknown }).agentFamilyKey) ??
+      scope.familyKey,
+    agentRole:
+      (value as { agentRole?: unknown }).agentRole === "helper" ||
+      (value as { agentRole?: unknown }).agentRole === "primary"
+        ? ((value as { agentRole: SncAgentRole }).agentRole)
+        : scope.role,
     updatedAt,
     controllerState: normalizeControllerState(
       (value as { controllerState?: unknown }).controllerState,
@@ -657,12 +797,109 @@ export async function loadSncWorkerState(params: {
     return null;
   }
 
-  try {
-    const raw = await readFile(buildStatePath(params.stateDir, params.sessionId, params.sessionKey), "utf8");
-    return normalizeWorkerState(JSON.parse(raw) as unknown, params);
-  } catch {
-    return null;
+  const scope = resolveSncAgentScope(params);
+  const filePaths = new Set<string>([
+    buildStatePath(params.stateDir, scope.sessionScopeKey),
+    buildLegacyStatePath(params.stateDir, params.sessionId, params.sessionKey),
+  ]);
+  const index = await readWorkerStateIndex(params.stateDir, params.sessionKey);
+  const matchingEntry = index?.entries.find((entry) => entry.sessionId === params.sessionId);
+  if (matchingEntry) {
+    filePaths.add(buildStatePath(params.stateDir, matchingEntry.sessionScopeKey));
+    filePaths.add(buildLegacyStatePath(params.stateDir, matchingEntry.sessionId, params.sessionKey));
   }
+
+  for (const filePath of filePaths) {
+    try {
+      const raw = await readFile(filePath, "utf8");
+      return normalizeWorkerState(JSON.parse(raw) as unknown, params);
+    } catch {
+      // Try next path for backward compatibility.
+    }
+  }
+
+  const isSessionKeyOnlyLookup =
+    Boolean(params.sessionKey) && normalizeOptionalString(params.sessionId) === params.sessionKey;
+  if (isSessionKeyOnlyLookup && index?.entries.length === 1) {
+    const [entry] = index.entries;
+    try {
+      const raw = await readFile(buildStatePath(params.stateDir, entry.sessionScopeKey), "utf8");
+      return normalizeWorkerState(JSON.parse(raw) as unknown, {
+        sessionId: entry.sessionId,
+        sessionKey: params.sessionKey,
+      });
+    } catch {
+      // Fall through to null if the indexed entry cannot be read.
+    }
+  }
+  return null;
+}
+
+async function loadSncWorkerStateCandidates(params: {
+  stateDir?: string;
+  sessionKey?: string;
+}): Promise<SncWorkerState[]> {
+  if (!params.stateDir) {
+    return [];
+  }
+  const sessionKey = normalizeOptionalString(params.sessionKey);
+  if (!sessionKey) {
+    return [];
+  }
+
+  const index = await readWorkerStateIndex(params.stateDir, sessionKey);
+  if (!index) {
+    return [];
+  }
+
+  const states: SncWorkerState[] = [];
+  for (const entry of index.entries) {
+    const state = await loadSncWorkerState({
+      stateDir: params.stateDir,
+      sessionId: entry.sessionId,
+      sessionKey,
+    });
+    if (state) {
+      states.push(state);
+    }
+  }
+  return states;
+}
+
+async function resolveSncWorkerStateCandidate<T>(params: {
+  stateDir?: string;
+  requesterSessionId?: string;
+  requesterSessionKey?: string;
+  matcher: (state: SncWorkerState) => T | undefined;
+}): Promise<{ state: SncWorkerState; match: T } | null> {
+  const explicitSessionId = normalizeOptionalString(params.requesterSessionId);
+  const requesterSessionKey = normalizeOptionalString(params.requesterSessionKey);
+  if (explicitSessionId) {
+    const exact = await loadSncWorkerState({
+      stateDir: params.stateDir,
+      sessionId: explicitSessionId,
+      sessionKey: requesterSessionKey,
+    });
+    if (!exact) {
+      return null;
+    }
+    const match = params.matcher(exact);
+    return match !== undefined ? { state: exact, match } : null;
+  }
+
+  const candidates = await loadSncWorkerStateCandidates({
+    stateDir: params.stateDir,
+    sessionKey: requesterSessionKey,
+  });
+  const matches: Array<{ state: SncWorkerState; match: T }> = [];
+  for (const state of candidates) {
+    const match = params.matcher(state);
+    if (match !== undefined) {
+      matches.push({ state, match });
+    }
+  }
+
+  return matches.length === 1 ? matches[0] : null;
 }
 
 export async function persistSncWorkerState(
@@ -672,19 +909,39 @@ export async function persistSncWorkerState(
     return null;
   }
 
+  const scope = resolveSncAgentScope(input);
   const nextState: SncWorkerState = {
     version: WORKER_STATE_VERSION,
     sessionId: input.sessionId,
     ...(input.sessionKey ? { sessionKey: input.sessionKey } : {}),
+    agentScopeKey: scope.sessionScopeKey,
+    agentKey: scope.agentKey,
+    agentFamilyKey: scope.familyKey,
+    agentRole: scope.role,
     updatedAt: input.updatedAt ?? new Date().toISOString(),
     controllerState: normalizeControllerState(input.controllerState, input.sessionKey),
     recentFoldBacks: normalizeFoldBacks(input.recentFoldBacks ?? []),
     consumedCompletionEventKeys: mergeConsumedKeys([], input.consumedCompletionEventKeys ?? []),
   };
 
-  const filePath = buildStatePath(input.stateDir, input.sessionId, input.sessionKey);
+  const filePath = buildStatePath(input.stateDir, scope.sessionScopeKey);
   await mkdir(path.dirname(filePath), { recursive: true });
   await writeFile(filePath, `${JSON.stringify(nextState, null, 2)}\n`, "utf8");
+  if (input.sessionKey) {
+    const aliasPath = buildStateAliasPath(input.stateDir, input.sessionKey);
+    const currentIndex = await readWorkerStateIndex(input.stateDir, input.sessionKey);
+    const index: SncWorkerStateIndex = {
+      version: 2,
+      sessionKey: input.sessionKey,
+      entries: mergeWorkerStateIndexEntries(currentIndex?.entries ?? [], {
+        sessionId: input.sessionId,
+        sessionScopeKey: scope.sessionScopeKey,
+        updatedAt: nextState.updatedAt,
+      }),
+    };
+    await mkdir(path.dirname(aliasPath), { recursive: true });
+    await writeFile(aliasPath, `${JSON.stringify(index, null, 2)}\n`, "utf8");
+  }
   return nextState;
 }
 
@@ -799,35 +1056,26 @@ export async function applySncWorkerSpawnedLifecycle(
     return null;
   }
 
-  const lookup = resolveWorkerStateLookup({
-    sessionId: input.requesterSessionKey,
-    sessionKey: input.requesterSessionKey,
-  });
-  if (!lookup) {
-    return null;
-  }
-
-  const existing = await loadSncWorkerState({
+  const resolved = await resolveSncWorkerStateCandidate({
     stateDir: input.stateDir,
-    sessionId: lookup.sessionId,
-    sessionKey: lookup.sessionKey,
+    requesterSessionId: input.requesterSessionId,
+    requesterSessionKey: input.requesterSessionKey,
+    matcher: (state) =>
+      findTrackedWorker(state.controllerState, {
+        childSessionKey: input.childSessionKey,
+        runId: input.runId,
+      }),
   });
-  if (!existing) {
+  if (!resolved) {
     return null;
   }
 
-  const record = findTrackedWorker(existing.controllerState, {
-    childSessionKey: input.childSessionKey,
-    runId: input.runId,
-  });
-  if (!record) {
-    return existing;
-  }
+  const { state: existing, match: record } = resolved;
 
   const now = input.updatedAt ?? new Date().toISOString();
   let controllerState = markSncWorkerSpawned(existing.controllerState, {
     workerId: record.workerId,
-    controllerSessionKey: lookup.sessionKey,
+    controllerSessionKey: existing.sessionKey,
     childSessionKey: input.childSessionKey,
     ...(input.runId ? { runId: input.runId } : {}),
     now,
@@ -852,30 +1100,21 @@ export async function applySncWorkerEndedLifecycle(
     return null;
   }
 
-  const lookup = resolveWorkerStateLookup({
-    sessionId: input.requesterSessionKey,
-    sessionKey: input.requesterSessionKey,
-  });
-  if (!lookup) {
-    return null;
-  }
-
-  const existing = await loadSncWorkerState({
+  const resolved = await resolveSncWorkerStateCandidate({
     stateDir: input.stateDir,
-    sessionId: lookup.sessionId,
-    sessionKey: lookup.sessionKey,
+    requesterSessionId: input.requesterSessionId,
+    requesterSessionKey: input.requesterSessionKey,
+    matcher: (state) =>
+      findTrackedWorker(state.controllerState, {
+        childSessionKey: input.targetSessionKey,
+        runId: input.runId,
+      }),
   });
-  if (!existing) {
+  if (!resolved) {
     return null;
   }
 
-  const record = findTrackedWorker(existing.controllerState, {
-    childSessionKey: input.targetSessionKey,
-    runId: input.runId,
-  });
-  if (!record) {
-    return existing;
-  }
+  const { state: existing, match: record } = resolved;
 
   if (
     record.status === "complete" ||
@@ -887,7 +1126,7 @@ export async function applySncWorkerEndedLifecycle(
 
   const result = buildLifecycleFallbackResult({
     record,
-    requesterSessionKey: lookup.sessionKey,
+    requesterSessionKey: existing.sessionKey,
     targetSessionKey: input.targetSessionKey,
     runId: input.runId,
     reason: input.reason,
@@ -1013,21 +1252,24 @@ export async function applySncWorkerLaunchToolResult(
     return null;
   }
 
-  const existing = await loadSncWorkerState({
+  const resolved = await resolveSncWorkerStateCandidate({
     stateDir: input.stateDir,
-    sessionId: input.sessionId,
-    sessionKey: input.sessionKey,
+    requesterSessionId:
+      normalizeOptionalString(input.sessionKey) &&
+      normalizeOptionalString(input.sessionId) === normalizeOptionalString(input.sessionKey)
+        ? undefined
+        : input.sessionId,
+    requesterSessionKey: input.sessionKey,
+    matcher: (state) => {
+      const queuedCandidates = findQueuedWorkerCandidates(state.controllerState);
+      return queuedCandidates.length === 1 ? queuedCandidates[0] : undefined;
+    },
   });
-  if (!existing) {
+  if (!resolved) {
     return null;
   }
 
-  const queuedCandidates = findQueuedWorkerCandidates(existing.controllerState);
-  if (queuedCandidates.length !== 1) {
-    return existing;
-  }
-
-  const queuedRecord = queuedCandidates[0];
+  const { state: existing, match: queuedRecord } = resolved;
   const controllerState = applySncWorkerLaunchResult(existing.controllerState, {
     workerId: queuedRecord.workerId,
     result: parsedResult,
@@ -1078,22 +1320,25 @@ export async function applySncWorkerFollowUpToolResult(
     return null;
   }
 
-  const existing = await loadSncWorkerState({
+  const resolved = await resolveSncWorkerStateCandidate({
     stateDir: input.stateDir,
-    sessionId: input.sessionId,
-    sessionKey: input.sessionKey,
+    requesterSessionId:
+      normalizeOptionalString(input.sessionKey) &&
+      normalizeOptionalString(input.sessionId) === normalizeOptionalString(input.sessionKey)
+        ? undefined
+        : input.sessionId,
+    requesterSessionKey: input.sessionKey,
+    matcher: (state) =>
+      findFollowUpWorkerCandidate(
+        state.controllerState,
+        normalizeOptionalString(parsedResult.sessionKey),
+      ),
   });
-  if (!existing) {
+  if (!resolved) {
     return null;
   }
 
-  const targetRecord = findFollowUpWorkerCandidate(
-    existing.controllerState,
-    normalizeOptionalString(parsedResult.sessionKey),
-  );
-  if (!targetRecord) {
-    return existing;
-  }
+  const { state: existing, match: targetRecord } = resolved;
 
   const controllerState = applySncWorkerFollowUpResult(existing.controllerState, {
     workerId: targetRecord.workerId,

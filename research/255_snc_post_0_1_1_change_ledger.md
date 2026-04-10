@@ -219,7 +219,7 @@ Record:
 
 Runtime effect:
 
-- cross-session durable memory is now agent-family-scoped by default instead of sharing one flat catalog per `stateDir`
+- cross-session durable memory is now exact-agent-scoped by default instead of sharing one flat catalog per `stateDir`
 - operators can still opt into a shared durable-memory pool with `memoryNamespace`
 - session continuity and worker state remain session-scoped, so the main remaining cross-agent contamination risk is now closed by default
 - colleague branch intake was completed as a design read only; no early SNC runtime from that branch was merged into the current `M3` line
@@ -236,6 +236,40 @@ Runtime effect:
 - legitimate continuity / evidence assistant cues still survive in historical support
 - duplicated assistant cues no longer render twice when `latestAssistantPlan` and `continuityNotes` carry the same sentence
 - assistant recent-message echoes that duplicate preserved secondary continuity cues are now suppressed to save budget and keep the truth surface cleaner
+
+### 17. Post-M3 writing style overlay v1
+
+Record:
+
+- `research/322_snc_post_m3_style_overlay_v1.md`
+
+Runtime effect:
+
+- SNC now exposes an optional `style` config branch under `plugins.entries.snc.config`
+- writing-only style overlays can now activate on `writing-prose` turns without contaminating durable memory, continuity state, or worker state
+- built-in first-party archetypes now ship for:
+  - `mist-suspense`
+  - `streetwise-banter`
+  - `bustling-intrigue`
+  - `pressure-escalation`
+- external JSON style profiles can now load in explicit profile mode
+- the style surface lands after truth and writing-discipline sections, before continuity support and durable cues
+- the full `Milestone 3` gate remains green with the style overlay slice included
+
+### 18. Formal v1.0.0 release-line reset
+
+Record:
+
+- `research/323_snc_v1_0_0_release_line_and_post_v1_implementation_read.md`
+
+Runtime / product effect:
+
+- package version moved from `0.2.0` to `1.0.0`
+- runtime engine version moved from `0.2.0` to `1.0.0`
+- user-facing README install paths now point at `openclaw-snc-1.0.0.tgz`
+- clean-host rehearsal now defaults to the `1.0.0` package line
+- a new formal release gate entry now exists at `scripts/validate_snc_v1.ps1`
+- stale release artifacts `0.1.0` and `0.2.0` were removed from the active release directory
 
 ## What This Means Operationally
 
@@ -261,3 +295,54 @@ Any new SNC behavior landed before the next packaged release should be appended 
 
 - testing knows what changed after the frozen package line
 - release notes do not need to reconstruct the delta from memory
+
+## Post-M3 Source-Line Changes
+
+- Added a writing-only style overlay layer with bounded config, built-in archetypes, optional external profile loading, and prompt-safe rendering.
+- Kept style overlay out of durable memory, session continuity state, worker state, and evidence-first/general assistant turns.
+- Updated OpenClaw config docs to show how to enable full style-overlay behavior safely.
+
+### 19. v1 release-line CR hardening for external style profiles
+
+Runtime / product effect:
+
+- external style profiles now require the desensitized contract instead of loading as weak structure JSON
+- profiles with `safety_mode` other than `desensitized` are rejected
+- profiles missing valid `copyright_guardrails.operational_prompt_fields` / `research_only_fields` are rejected
+- live prompt rendering now only projects external fields explicitly allowed by the profile guardrails
+- root/plugin README now include external profile safety rules, design intent, and post-`v1` TODO guidance
+
+### 20. Post-v1 style-from-docs and multi-agent compatibility hardening
+
+Record:
+
+- `research/341_snc_post_v1_style_agent_isolation_and_openclaw_compat_v1.md`
+
+Runtime / product effect:
+
+- style overlay guidance now draws more directly from anti-AI-writing reference docs instead of relying only on abstract cleanliness heuristics
+- writing mode now explicitly warns against quota-writing such as mechanically placing one image, one feeling, or one hook per paragraph
+- session continuity and worker state now persist under exact `sessionKey#sessionId` scope files so sibling sessions of the same agent key no longer overwrite each other's summaries or compaction state
+- durable memory now defaults to exact agent-key isolation rather than broader family sharing
+- helper sessions now run in a bounded lane by default:
+  - no style overlay
+  - brief / ledger preserved
+  - packet fan-out suppressed
+- worker hook fold-back now uses a host-compatible exact-scope index rather than a single latest-scope alias
+- peer agent keys like `agent:main:reviewer` now remain on the primary lane unless they explicitly live under a structural helper marker such as `subagent`
+- sessionKey-only worker tool-result and lifecycle updates now resolve against all candidate exact scopes and only mutate when there is a unique match, instead of silently following latest-writer wins behavior
+
+### 21. v1.0.1 release patch and hook ambiguity regression coverage
+
+Runtime / product effect:
+
+- the public SNC package line is now `1.0.1`
+- install docs and clean-host rehearsal defaults now point at `openclaw-snc-1.0.1.tgz`
+- hook-scaffold regression coverage now proves `tool_result_persist` stays no-op when `sessions_spawn` or `sessions_send` arrives with only `sessionKey` and multiple exact scopes coexist
+- the formal release gate was rerun green on the `1.0.1` line:
+  - shaping focus `88/88`
+  - continuity baseline `41/41`
+  - dispatcher focused vitest `107/107`
+  - workspace `tsc` pass
+  - package rebuild pass
+  - clean-host rehearsal pass

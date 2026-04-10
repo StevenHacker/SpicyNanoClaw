@@ -80,9 +80,13 @@ describe("snc session state", () => {
     });
 
     expect(reloaded).toMatchObject({
-      version: 2,
+      version: 3,
       sessionId: "session-1",
       sessionKey: "agent:main:story",
+      agentScopeKey: "agent:main:story#session-1",
+      agentKey: "agent:main:story",
+      agentFamilyKey: "agent:main",
+      agentRole: "primary",
       turnCount: 1,
       autoCompactionSummary: "compacted once",
     });
@@ -101,7 +105,46 @@ describe("snc session state", () => {
 
     const files = readdirSync(path.join(stateDir, "sessions"));
     expect(files).toHaveLength(1);
-    expect(files[0]).toMatch(/^agent-main-story-[a-f0-9]{10}\.json$/);
+    expect(files[0]).toMatch(/^agent-main-story-session-1-[a-f0-9]{10}\.json$/);
+  });
+
+  it("keeps same-agent different-session summaries in separate state files", async () => {
+    const stateDir = createStateDir();
+
+    await persistSncSessionState({
+      stateDir,
+      sessionId: "session-a",
+      sessionKey: "agent:main:story",
+      messages: [message("user", "Keep the harbor debt visible.", 1)],
+      prePromptMessageCount: 0,
+      autoCompactionSummary: "session a summary",
+    });
+
+    await persistSncSessionState({
+      stateDir,
+      sessionId: "session-b",
+      sessionKey: "agent:main:story",
+      messages: [message("user", "Keep the ring clue visible.", 2)],
+      prePromptMessageCount: 0,
+      autoCompactionSummary: "session b summary",
+    });
+
+    const reloadedA = await loadSncSessionState({
+      stateDir,
+      sessionId: "session-a",
+      sessionKey: "agent:main:story",
+    });
+    const reloadedB = await loadSncSessionState({
+      stateDir,
+      sessionId: "session-b",
+      sessionKey: "agent:main:story",
+    });
+
+    expect(reloadedA?.autoCompactionSummary).toBe("session a summary");
+    expect(reloadedB?.autoCompactionSummary).toBe("session b summary");
+    expect(reloadedA?.agentScopeKey).toBe("agent:main:story#session-a");
+    expect(reloadedB?.agentScopeKey).toBe("agent:main:story#session-b");
+    expect(readdirSync(path.join(stateDir, "sessions"))).toHaveLength(2);
   });
 
   it("keeps focus and assistant-plan extraction conservative without explicit cues", async () => {
@@ -200,9 +243,13 @@ describe("snc session state", () => {
 
   it("renders a prompt-ready session snapshot section", () => {
     const text = buildSncSessionStateSection({
-      version: 2,
+      version: 3,
       sessionId: "session-3",
       sessionKey: "agent:main:story",
+      agentScopeKey: "agent:main:story#session-3",
+      agentKey: "agent:main:story",
+      agentFamilyKey: "agent:main",
+      agentRole: "primary",
       updatedAt: "2026-04-03T10:00:00.000Z",
       turnCount: 3,
       autoCompactionSummary: "summary text",
@@ -247,9 +294,13 @@ describe("snc session state", () => {
   it("demotes assistant-plan truth in evidence-grounding mode", () => {
     const text = buildSncSessionStateSection(
       {
-        version: 2,
+        version: 3,
         sessionId: "session-evidence-1",
         sessionKey: "agent:main:ops",
+        agentScopeKey: "agent:main:ops#session-evidence-1",
+        agentKey: "agent:main:ops",
+        agentFamilyKey: "agent:main",
+        agentRole: "primary",
         updatedAt: "2026-04-03T10:00:00.000Z",
         turnCount: 3,
         storyLedger: {
@@ -280,9 +331,13 @@ describe("snc session state", () => {
 
   it("keeps legitimate report-style continuity cues in evidence historical support", () => {
     const text = buildSncEvidenceHistoricalSupportSection({
-      version: 2,
+      version: 3,
       sessionId: "session-evidence-history-2",
       sessionKey: "agent:main:ops",
+      agentScopeKey: "agent:main:ops#session-evidence-history-2",
+      agentKey: "agent:main:ops",
+      agentFamilyKey: "agent:main",
+      agentRole: "primary",
       updatedAt: "2026-04-03T10:00:00.000Z",
       turnCount: 3,
       storyLedger: {
@@ -312,9 +367,13 @@ describe("snc session state", () => {
 
   it("suppresses pure process residue from evidence historical support", () => {
     const text = buildSncEvidenceHistoricalSupportSection({
-      version: 2,
+      version: 3,
       sessionId: "session-evidence-history-3",
       sessionKey: "agent:main:ops",
+      agentScopeKey: "agent:main:ops#session-evidence-history-3",
+      agentKey: "agent:main:ops",
+      agentFamilyKey: "agent:main",
+      agentRole: "primary",
       updatedAt: "2026-04-03T10:00:00.000Z",
       turnCount: 4,
       storyLedger: {
@@ -352,9 +411,13 @@ describe("snc session state", () => {
 
   it("builds a split current-support section for evidence-grounding mode", () => {
     const text = buildSncEvidenceCurrentSupportSection({
-      version: 2,
+      version: 3,
       sessionId: "session-evidence-current-1",
       sessionKey: "agent:main:ops",
+      agentScopeKey: "agent:main:ops#session-evidence-current-1",
+      agentKey: "agent:main:ops",
+      agentFamilyKey: "agent:main",
+      agentRole: "primary",
       updatedAt: "2026-04-03T10:00:00.000Z",
       turnCount: 4,
       autoCompactionSummary: "older summary",
@@ -394,9 +457,13 @@ describe("snc session state", () => {
 
   it("builds a split historical-support section for evidence-grounding mode", () => {
     const text = buildSncEvidenceHistoricalSupportSection({
-      version: 2,
+      version: 3,
       sessionId: "session-evidence-history-1",
       sessionKey: "agent:main:ops",
+      agentScopeKey: "agent:main:ops#session-evidence-history-1",
+      agentKey: "agent:main:ops",
+      agentFamilyKey: "agent:main",
+      agentRole: "primary",
       updatedAt: "2026-04-03T10:00:00.000Z",
       turnCount: 4,
       autoCompactionSummary: "older summary",
@@ -436,9 +503,13 @@ describe("snc session state", () => {
 
   it("deduplicates evidence historical continuity cues when assistant-plan and continuity note match", () => {
     const text = buildSncEvidenceHistoricalSupportSection({
-      version: 2,
+      version: 3,
       sessionId: "session-evidence-history-duplicate-1",
       sessionKey: "agent:main:ops",
+      agentScopeKey: "agent:main:ops#session-evidence-history-duplicate-1",
+      agentKey: "agent:main:ops",
+      agentFamilyKey: "agent:main",
+      agentRole: "primary",
       updatedAt: "2026-04-03T10:00:00.000Z",
       turnCount: 4,
       storyLedger: {
@@ -466,9 +537,13 @@ describe("snc session state", () => {
 
   it("suppresses stale rejected aliases from evidence historical support while keeping correction guardrails", () => {
     const text = buildSncEvidenceHistoricalSupportSection({
-      version: 2,
+      version: 3,
       sessionId: "session-evidence-history-2",
       sessionKey: "agent:main:ops",
+      agentScopeKey: "agent:main:ops#session-evidence-history-2",
+      agentKey: "agent:main:ops",
+      agentFamilyKey: "agent:main",
+      agentRole: "primary",
       updatedAt: "2026-04-03T10:00:00.000Z",
       turnCount: 5,
       autoCompactionSummary: "older summary",
@@ -500,9 +575,13 @@ describe("snc session state", () => {
   it("suppresses report-style assistant residue from writing-draft prompt surfaces", () => {
     const text = buildSncSessionStateSection(
       {
-        version: 2,
+        version: 3,
         sessionId: "session-writing-report-1",
         sessionKey: "agent:main:story",
+        agentScopeKey: "agent:main:story#session-writing-report-1",
+        agentKey: "agent:main:story",
+        agentFamilyKey: "agent:main",
+        agentRole: "primary",
         updatedAt: "2026-04-06T12:00:00.000Z",
         turnCount: 6,
         storyLedger: {

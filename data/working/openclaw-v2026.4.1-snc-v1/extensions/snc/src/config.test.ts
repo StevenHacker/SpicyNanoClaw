@@ -12,6 +12,19 @@ describe("SNC config", () => {
       projectionLimit: 3,
       projectionMinimumScore: 3,
     });
+    expect(config.agentIsolation).toEqual({
+      enabled: true,
+      durableMemoryScope: "agent",
+      helperStyleOverlay: false,
+      helperArtifacts: "bounded",
+    });
+    expect(config.style).toEqual({
+      enabled: false,
+      mode: "off",
+      intensity: 0.72,
+      strictness: 0.82,
+      maxExamples: 1,
+    });
     expect(config.hooks).toEqual({
       enabled: false,
       targets: [],
@@ -143,6 +156,26 @@ describe("SNC config", () => {
     });
   });
 
+  it("resolves agent-isolation controls with safe defaults", () => {
+    const config = resolveSncPluginConfig(
+      {
+        agentIsolation: {
+          durableMemoryScope: "family",
+          helperStyleOverlay: true,
+          helperArtifacts: "full",
+        },
+      },
+      (input) => input,
+    );
+
+    expect(config.agentIsolation).toEqual({
+      enabled: true,
+      durableMemoryScope: "family",
+      helperStyleOverlay: true,
+      helperArtifacts: "full",
+    });
+  });
+
   it("clamps invalid durable-memory controls to safe minimums", () => {
     const config = resolveSncPluginConfig(
       {
@@ -161,6 +194,51 @@ describe("SNC config", () => {
       staleEntryDays: 1,
       projectionLimit: 1,
       projectionMinimumScore: 0,
+    });
+  });
+
+  it("resolves style-overlay defaults when style config is present", () => {
+    const config = resolveSncPluginConfig(
+      {
+        style: {
+          mode: "auto",
+        },
+      },
+      (input) => `/abs/${input}`,
+    );
+
+    expect(config.style).toEqual({
+      enabled: true,
+      mode: "auto",
+      intensity: 0.72,
+      strictness: 0.82,
+      maxExamples: 1,
+    });
+  });
+
+  it("resolves explicit style profile config and clamps bounds", () => {
+    const config = resolveSncPluginConfig(
+      {
+        style: {
+          mode: "profile",
+          profileId: "mist-suspense",
+          profileFile: "./profiles/mist.json",
+          intensity: 2,
+          strictness: -1,
+          maxExamples: 3.8,
+        },
+      },
+      (input) => `/abs/${input}`,
+    );
+
+    expect(config.style).toEqual({
+      enabled: true,
+      mode: "profile",
+      profileId: "mist-suspense",
+      profileFile: "/abs/./profiles/mist.json",
+      intensity: 1,
+      strictness: 0,
+      maxExamples: 3,
     });
   });
 });

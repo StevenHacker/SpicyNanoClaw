@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { normalizeHyphenSlug } from "openclaw/plugin-sdk/core";
+import { resolveSncAgentScope } from "./agent-scope.js";
 import type { SncSessionState } from "./session-state.js";
 
 const DURABLE_MEMORY_VERSION = 1;
@@ -186,25 +187,6 @@ function normalizeTextKey(value: string): string {
   return normalizeText(value).toLowerCase();
 }
 
-function deriveDefaultNamespaceLabel(
-  sessionId: string,
-  sessionKey?: string,
-): string | undefined {
-  const normalizedSessionKey = normalizeOptionalString(sessionKey);
-  if (normalizedSessionKey) {
-    const parts = normalizedSessionKey
-      .split(":")
-      .map((part) => part.trim())
-      .filter(Boolean);
-    if (parts.length >= 2) {
-      return `${parts[0]}:${parts[1]}`;
-    }
-    return normalizedSessionKey;
-  }
-
-  return normalizeOptionalString(sessionId);
-}
-
 function buildNamespaceFolderName(namespace: string): string {
   const normalized = normalizeText(namespace);
   const slug = normalizeHyphenSlug(normalized) || "shared";
@@ -217,8 +199,13 @@ export function resolveSncDurableMemoryNamespace(params: {
   sessionKey?: string;
   configuredNamespace?: string;
 }): string | undefined {
-  return normalizeOptionalString(params.configuredNamespace)
-    ?? deriveDefaultNamespaceLabel(params.sessionId, params.sessionKey);
+  return (
+    normalizeOptionalString(params.configuredNamespace) ??
+    resolveSncAgentScope({
+      sessionId: params.sessionId,
+      sessionKey: params.sessionKey,
+    }).agentKey
+  );
 }
 
 function clampUtf8(input: string, maxBytes: number): string {

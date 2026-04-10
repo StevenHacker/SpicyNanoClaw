@@ -3,9 +3,14 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import { normalizeHyphenSlug } from "openclaw/plugin-sdk/core";
+import {
+  buildSncScopedFilename,
+  resolveSncAgentScope,
+  type SncAgentRole,
+} from "./agent-scope.js";
 import { analyzeSncTranscriptMessage } from "./transcript-shaping.js";
 
-const STATE_VERSION = 2;
+const STATE_VERSION = 3;
 const MAX_RECENT_MESSAGES = 8;
 const MAX_MESSAGE_CHARS = 1_600;
 const MAX_LEDGER_ITEMS = 8;
@@ -103,6 +108,10 @@ export type SncSessionState = {
   version: number;
   sessionId: string;
   sessionKey?: string;
+  agentScopeKey: string;
+  agentKey: string;
+  agentFamilyKey: string;
+  agentRole: SncAgentRole;
   updatedAt: string;
   turnCount: number;
   recentMessages: SncStateMessage[];
@@ -674,15 +683,19 @@ function extractTurnState(params: {
   };
 }
 
-function buildSessionStateFilename(sessionId: string, sessionKey?: string): string {
+function buildLegacySessionStateFilename(sessionId: string, sessionKey?: string): string {
   const rawLabel = sessionKey?.trim() || sessionId.trim() || "session";
   const slug = normalizeHyphenSlug(rawLabel) || "session";
   const hash = createHash("sha1").update(rawLabel).digest("hex").slice(0, 10);
   return `${slug}-${hash}.json`;
 }
 
-function buildSessionStatePath(stateDir: string, sessionId: string, sessionKey?: string): string {
-  return path.join(stateDir, "sessions", buildSessionStateFilename(sessionId, sessionKey));
+function buildSessionStatePath(stateDir: string, scopeKey: string): string {
+  return path.join(stateDir, "sessions", buildSncScopedFilename(scopeKey));
+}
+
+function buildLegacySessionStatePath(stateDir: string, sessionId: string, sessionKey?: string): string {
+  return path.join(stateDir, "sessions", buildLegacySessionStateFilename(sessionId, sessionKey));
 }
 
 export async function loadSncSessionState(params: {
@@ -694,52 +707,84 @@ export async function loadSncSessionState(params: {
     return null;
   }
 
-  const filePath = buildSessionStatePath(params.stateDir, params.sessionId, params.sessionKey);
+  const scope = resolveSncAgentScope(params);
+  const filePaths = [
+    buildSessionStatePath(params.stateDir, scope.sessionScopeKey),
+    buildLegacySessionStatePath(params.stateDir, params.sessionId, params.sessionKey),
+  ];
 
-  try {
-    const raw = await readFile(filePath, "utf8");
-    const parsed = JSON.parse(raw) as Partial<SncSessionState>;
-    if (!parsed || typeof parsed !== "object") {
-      return null;
+  for (const filePath of filePaths) {
+    try {
+      const raw = await readFile(filePath, "utf8");
+      const parsed = JSON.parse(raw) as Partial<SncSessionState>;
+      if (!parsed || typeof parsed !== "object") {
+        continue;
+      }
+
+      const recentMessages = Array.isArray(parsed.recentMessages)
+        ? parsed.recentMessages
+            .map((entry) => {
+              if (!entry || typeof entry !== "object") {
+                return undefined;
+              }
+              const role = (entry as { role?: unknown }).role;
+              const text = (entry as { text?: unknown }).text;
+              const timestamp = (entry as { timestamp?: unknown }).timestamp;
+              if ((role !== "user" && role !== "assistant") || typeof text !== "string") {
+                return undefined;
+              }
+              return {
+                role,
+                text,
+                ...(typeof timestamp === "number" && Number.isFinite(timestamp) ? { timestamp } : {}),
+              } satisfies SncStateMessage;
+            })
+            .filter((entry): entry is SncStateMessage => Boolean(entry))
+        : [];
+
+      const persistedSessionId =
+        typeof parsed.sessionId === "string" ? parsed.sessionId : params.sessionId;
+      const persistedSessionKey =
+        typeof parsed.sessionKey === "string" ? parsed.sessionKey : params.sessionKey;
+      const persistedScope = resolveSncAgentScope({
+        sessionId: persistedSessionId,
+        sessionKey: persistedSessionKey,
+      });
+
+      return {
+        version: typeof parsed.version === "number" ? parsed.version : STATE_VERSION,
+        sessionId: persistedSessionId,
+        ...(persistedSessionKey ? { sessionKey: persistedSessionKey } : {}),
+        agentScopeKey:
+          typeof parsed.agentScopeKey === "string"
+            ? parsed.agentScopeKey
+            : persistedScope.sessionScopeKey,
+        agentKey:
+          typeof parsed.agentKey === "string" ? parsed.agentKey : persistedScope.agentKey,
+        agentFamilyKey:
+          typeof parsed.agentFamilyKey === "string"
+            ? parsed.agentFamilyKey
+            : persistedScope.familyKey,
+        agentRole:
+          parsed.agentRole === "helper" || parsed.agentRole === "primary"
+            ? parsed.agentRole
+            : persistedScope.role,
+        updatedAt:
+          typeof parsed.updatedAt === "string" ? parsed.updatedAt : new Date(0).toISOString(),
+        turnCount: typeof parsed.turnCount === "number" ? parsed.turnCount : 0,
+        recentMessages,
+        ...(typeof parsed.autoCompactionSummary === "string"
+          ? { autoCompactionSummary: parsed.autoCompactionSummary }
+          : {}),
+        storyLedger: normalizeStoryLedger(parsed.storyLedger),
+        chapterState: normalizeChapterState(parsed.chapterState),
+      };
+    } catch {
+      // Try next path for backward compatibility.
     }
-
-    const recentMessages = Array.isArray(parsed.recentMessages)
-      ? parsed.recentMessages
-          .map((entry) => {
-            if (!entry || typeof entry !== "object") {
-              return undefined;
-            }
-            const role = (entry as { role?: unknown }).role;
-            const text = (entry as { text?: unknown }).text;
-            const timestamp = (entry as { timestamp?: unknown }).timestamp;
-            if ((role !== "user" && role !== "assistant") || typeof text !== "string") {
-              return undefined;
-            }
-            return {
-              role,
-              text,
-              ...(typeof timestamp === "number" && Number.isFinite(timestamp) ? { timestamp } : {}),
-            } satisfies SncStateMessage;
-          })
-          .filter((entry): entry is SncStateMessage => Boolean(entry))
-      : [];
-
-    return {
-      version: typeof parsed.version === "number" ? parsed.version : STATE_VERSION,
-      sessionId: typeof parsed.sessionId === "string" ? parsed.sessionId : params.sessionId,
-      ...(typeof parsed.sessionKey === "string" ? { sessionKey: parsed.sessionKey } : {}),
-      updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : new Date(0).toISOString(),
-      turnCount: typeof parsed.turnCount === "number" ? parsed.turnCount : 0,
-      recentMessages,
-      ...(typeof parsed.autoCompactionSummary === "string"
-        ? { autoCompactionSummary: parsed.autoCompactionSummary }
-        : {}),
-      storyLedger: normalizeStoryLedger(parsed.storyLedger),
-      chapterState: normalizeChapterState(parsed.chapterState),
-    };
-  } catch {
-    return null;
   }
+
+  return null;
 }
 
 export async function persistSncSessionState(params: {
@@ -754,7 +799,8 @@ export async function persistSncSessionState(params: {
     return null;
   }
 
-  const filePath = buildSessionStatePath(params.stateDir, params.sessionId, params.sessionKey);
+  const scope = resolveSncAgentScope(params);
+  const filePath = buildSessionStatePath(params.stateDir, scope.sessionScopeKey);
   const existing = await loadSncSessionState({
     stateDir: params.stateDir,
     sessionId: params.sessionId,
@@ -816,6 +862,10 @@ export async function persistSncSessionState(params: {
     version: STATE_VERSION,
     sessionId: params.sessionId,
     ...(params.sessionKey ? { sessionKey: params.sessionKey } : {}),
+    agentScopeKey: scope.sessionScopeKey,
+    agentKey: scope.agentKey,
+    agentFamilyKey: scope.familyKey,
+    agentRole: scope.role,
     updatedAt: new Date().toISOString(),
     turnCount: (existing?.turnCount ?? 0) + (newMessages.length > 0 ? 1 : 0),
     recentMessages: [...(existing?.recentMessages ?? []), ...newMessages].slice(-MAX_RECENT_MESSAGES),

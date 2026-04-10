@@ -36,12 +36,32 @@ export type SncPluginHookConfig = {
 };
 
 export type SncSpecializationMode = "auto" | "writing" | "general";
+export type SncStyleOverlayMode = "off" | "auto" | "profile";
+export type SncAgentIsolationDurableMemoryScope = "agent" | "family" | "shared";
+export type SncAgentIsolationHelperArtifactsMode = "full" | "bounded";
 
 export type SncPluginDurableMemoryConfig = {
   maxCatalogEntries?: number;
   staleEntryDays?: number;
   projectionLimit?: number;
   projectionMinimumScore?: number;
+};
+
+export type SncPluginStyleConfig = {
+  enabled?: boolean;
+  mode?: SncStyleOverlayMode;
+  profileId?: string;
+  profileFile?: string;
+  intensity?: number;
+  strictness?: number;
+  maxExamples?: number;
+};
+
+export type SncPluginAgentIsolationConfig = {
+  enabled?: boolean;
+  durableMemoryScope?: SncAgentIsolationDurableMemoryScope;
+  helperStyleOverlay?: boolean;
+  helperArtifacts?: SncAgentIsolationHelperArtifactsMode;
 };
 
 export type SncPluginConfig = {
@@ -53,6 +73,8 @@ export type SncPluginConfig = {
   memoryNamespace?: string;
   specializationMode?: SncSpecializationMode;
   durableMemory?: SncPluginDurableMemoryConfig;
+  agentIsolation?: SncPluginAgentIsolationConfig;
+  style?: SncPluginStyleConfig;
   maxSectionBytes?: number;
   hooks?: SncPluginHookConfig;
 };
@@ -78,6 +100,21 @@ export type SncResolvedConfig = {
     staleEntryDays: number;
     projectionLimit: number;
     projectionMinimumScore: number;
+  };
+  agentIsolation: {
+    enabled: boolean;
+    durableMemoryScope: SncAgentIsolationDurableMemoryScope;
+    helperStyleOverlay: boolean;
+    helperArtifacts: SncAgentIsolationHelperArtifactsMode;
+  };
+  style: {
+    enabled: boolean;
+    mode: SncStyleOverlayMode;
+    profileId?: string;
+    profileFile?: string;
+    intensity: number;
+    strictness: number;
+    maxExamples: number;
   };
   maxSectionBytes: number;
   hooks: SncResolvedHookConfig;
@@ -149,8 +186,61 @@ function normalizeBoundedInteger(
   return Math.max(minimum, Math.floor(value));
 }
 
+function normalizeBoundedScalar(value: unknown, fallback: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return fallback;
+  }
+  return Math.max(0, Math.min(1, value));
+}
+
 function resolveSpecializationMode(value: unknown): SncSpecializationMode {
   return value === "writing" || value === "general" ? value : DEFAULT_SPECIALIZATION_MODE;
+}
+
+function resolveStyleOverlayMode(value: unknown): SncStyleOverlayMode {
+  return value === "off" || value === "profile" ? value : "auto";
+}
+
+function resolveAgentIsolationDurableMemoryScope(
+  value: unknown,
+): SncAgentIsolationDurableMemoryScope {
+  return value === "family" || value === "shared" ? value : "agent";
+}
+
+function resolveAgentIsolationHelperArtifactsMode(
+  value: unknown,
+): SncAgentIsolationHelperArtifactsMode {
+  return value === "full" ? value : "bounded";
+}
+
+function resolveAgentIsolationConfig(
+  value: unknown,
+): SncResolvedConfig["agentIsolation"] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {
+      enabled: true,
+      durableMemoryScope: "agent",
+      helperStyleOverlay: false,
+      helperArtifacts: "bounded",
+    };
+  }
+
+  const isolation = value as {
+    enabled?: unknown;
+    durableMemoryScope?: unknown;
+    helperStyleOverlay?: unknown;
+    helperArtifacts?: unknown;
+  };
+  return {
+    enabled: isolation.enabled !== false,
+    durableMemoryScope: resolveAgentIsolationDurableMemoryScope(
+      isolation.durableMemoryScope,
+    ),
+    helperStyleOverlay: isolation.helperStyleOverlay === true,
+    helperArtifacts: resolveAgentIsolationHelperArtifactsMode(
+      isolation.helperArtifacts,
+    ),
+  };
 }
 
 function resolveHookConfig(value: unknown): SncResolvedHookConfig {
@@ -240,6 +330,49 @@ function resolveDurableMemoryConfig(
   };
 }
 
+function resolveStyleConfig(
+  value: unknown,
+  resolvePath: (input: string) => string,
+): SncResolvedConfig["style"] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {
+      enabled: false,
+      mode: "off",
+      intensity: 0.72,
+      strictness: 0.82,
+      maxExamples: 1,
+    };
+  }
+
+  const style = value as {
+    enabled?: unknown;
+    mode?: unknown;
+    profileId?: unknown;
+    profileFile?: unknown;
+    intensity?: unknown;
+    strictness?: unknown;
+    maxExamples?: unknown;
+  };
+
+  const explicitProfileId = normalizeString(style.profileId);
+  const explicitProfileFile = resolveOptionalPath(style.profileFile, resolvePath);
+  const objectHasEnabled = Object.prototype.hasOwnProperty.call(value, "enabled");
+  const enabled = objectHasEnabled
+    ? style.enabled === true
+    : Boolean(explicitProfileId || explicitProfileFile || style.mode);
+  const mode = enabled ? resolveStyleOverlayMode(style.mode) : "off";
+
+  return {
+    enabled,
+    mode,
+    ...(explicitProfileId ? { profileId: explicitProfileId } : {}),
+    ...(explicitProfileFile ? { profileFile: explicitProfileFile } : {}),
+    intensity: normalizeBoundedScalar(style.intensity, 0.72),
+    strictness: normalizeBoundedScalar(style.strictness, 0.82),
+    maxExamples: normalizeBoundedInteger(style.maxExamples, 1, 1),
+  };
+}
+
 export function resolveSncPluginConfig(
   value: Record<string, unknown> | undefined,
   resolvePath: (input: string) => string,
@@ -256,6 +389,8 @@ export function resolveSncPluginConfig(
     memoryNamespace: normalizeString(raw.memoryNamespace),
     specializationMode: resolveSpecializationMode(raw.specializationMode),
     durableMemory: resolveDurableMemoryConfig(raw.durableMemory),
+    agentIsolation: resolveAgentIsolationConfig(raw.agentIsolation),
+    style: resolveStyleConfig(raw.style, resolvePath),
     maxSectionBytes:
       typeof maxSectionBytesRaw === "number" && Number.isFinite(maxSectionBytesRaw)
         ? Math.max(MIN_MAX_SECTION_BYTES, Math.floor(maxSectionBytesRaw))

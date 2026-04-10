@@ -95,7 +95,9 @@ $CoreTests = @(
 
 $FocusTests = @(
     "extensions/snc/src/config.test.ts",
+    "extensions/snc/src/durable-memory.test.ts",
     "extensions/snc/src/hook-scaffold.test.ts",
+    "extensions/snc/src/task-posture.test.ts",
     "extensions/snc/src/transcript-shaping.test.ts",
     "extensions/snc/src/replacement-ledger.test.ts",
     "extensions/snc/src/worker-policy.test.ts",

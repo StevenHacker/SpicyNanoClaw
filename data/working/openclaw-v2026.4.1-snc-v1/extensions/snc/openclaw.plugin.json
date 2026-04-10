@@ -60,6 +60,72 @@
           }
         }
       },
+      "agentIsolation": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "durableMemoryScope": {
+            "type": "string",
+            "enum": [
+              "agent",
+              "family",
+              "shared"
+            ]
+          },
+          "helperStyleOverlay": {
+            "type": "boolean"
+          },
+          "helperArtifacts": {
+            "type": "string",
+            "enum": [
+              "full",
+              "bounded"
+            ]
+          }
+        }
+      },
+      "style": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "off",
+              "auto",
+              "profile"
+            ]
+          },
+          "profileId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "profileFile": {
+            "type": "string",
+            "minLength": 1
+          },
+          "intensity": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "strictness": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "maxExamples": {
+            "type": "number",
+            "minimum": 1
+          }
+        }
+      },
       "hooks": {
         "type": "object",
         "additionalProperties": false,
@@ -128,6 +194,14 @@
     "durableMemory": {
       "label": "Durable Memory",
       "help": "Bounded controls for SNC-owned durable memory retention and projection. Keep these conservative unless continuity evidence shows the defaults are too weak."
+    },
+    "agentIsolation": {
+      "label": "Agent Isolation",
+      "help": "Controls how strongly SNC separates multi-agent session state, durable memory scope, helper-style projection, and helper artifact loading. Keep this enabled unless you explicitly want broader sharing."
+    },
+    "style": {
+      "label": "Writing Style Overlay",
+      "help": "Optional writing-only surface control layer. Use this to add built-in or external style profiles for prose drafting without polluting SNC continuity or durable memory."
     },
     "hooks": {
       "label": "Hook Scaffold",

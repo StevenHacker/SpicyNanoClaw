@@ -30,6 +30,19 @@ function createConfig(overrides: Partial<SncResolvedConfig> = {}): SncResolvedCo
       projectionLimit: 3,
       projectionMinimumScore: 3,
     },
+    style: {
+      enabled: false,
+      mode: "off",
+      intensity: 0.72,
+      strictness: 0.82,
+      maxExamples: 1,
+    },
+    agentIsolation: {
+      enabled: true,
+      durableMemoryScope: "agent",
+      helperStyleOverlay: false,
+      helperArtifacts: "bounded",
+    },
     maxSectionBytes: 24_576,
     hooks: {
       enabled: false,

@@ -71,9 +71,13 @@ function createState(): SncWorkerState {
   });
 
   return {
-    version: 1,
+    version: 2,
     sessionId: "session-diagnostics-1",
     sessionKey: "agent:main:mixed",
+    agentScopeKey: "agent:main:mixed#session-diagnostics-1",
+    agentKey: "agent:main:mixed",
+    agentFamilyKey: "agent:main",
+    agentRole: "primary",
     updatedAt: "2026-04-04T10:00:00.000Z",
     controllerState,
     recentFoldBacks: [],
@@ -99,8 +103,12 @@ describe("SNC worker diagnostics", () => {
 
   it("returns nothing when no live worker needs operator attention", () => {
     const cleanState: SncWorkerState = {
-      version: 1,
+      version: 2,
       sessionId: "session-diagnostics-2",
+      agentScopeKey: "session-diagnostics-2",
+      agentKey: "session-diagnostics-2",
+      agentFamilyKey: "session-diagnostics-2",
+      agentRole: "primary",
       updatedAt: "2026-04-04T10:00:00.000Z",
       controllerState: createSncWorkerControllerState(),
       recentFoldBacks: [],
