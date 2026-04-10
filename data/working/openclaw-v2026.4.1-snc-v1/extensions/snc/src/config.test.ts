@@ -12,6 +12,12 @@ describe("SNC config", () => {
       projectionLimit: 3,
       projectionMinimumScore: 3,
     });
+    expect(config.agentIsolation).toEqual({
+      enabled: true,
+      durableMemoryScope: "agent",
+      helperStyleOverlay: false,
+      helperArtifacts: "bounded",
+    });
     expect(config.style).toEqual({
       enabled: false,
       mode: "off",
@@ -147,6 +153,26 @@ describe("SNC config", () => {
       staleEntryDays: 14,
       projectionLimit: 5,
       projectionMinimumScore: 7,
+    });
+  });
+
+  it("resolves agent-isolation controls with safe defaults", () => {
+    const config = resolveSncPluginConfig(
+      {
+        agentIsolation: {
+          durableMemoryScope: "family",
+          helperStyleOverlay: true,
+          helperArtifacts: "full",
+        },
+      },
+      (input) => input,
+    );
+
+    expect(config.agentIsolation).toEqual({
+      enabled: true,
+      durableMemoryScope: "family",
+      helperStyleOverlay: true,
+      helperArtifacts: "full",
     });
   });
 

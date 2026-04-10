@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
@@ -15,6 +15,7 @@ import {
   recordSncWorkerResult,
 } from "./worker-policy.js";
 import {
+  applySncWorkerEndedLifecycle,
   applySncWorkerCompletionEvents,
   buildSncWorkerStateSection,
   loadSncWorkerState,
@@ -64,6 +65,206 @@ afterEach(() => {
 });
 
 describe("SNC worker state", () => {
+  it("keeps same-agent different-session worker ledgers in separate files", async () => {
+    const root = createTempDir();
+    const stateDir = path.join(root, ".snc-state");
+
+    await persistSncWorkerState({
+      stateDir,
+      sessionId: "session-worker-a",
+      sessionKey: "agent:main:story",
+      controllerState: createSncWorkerControllerState({
+        controllerSessionKey: "agent:main:story",
+      }),
+      updatedAt: "2026-04-04T08:00:00.000Z",
+    });
+
+    await persistSncWorkerState({
+      stateDir,
+      sessionId: "session-worker-b",
+      sessionKey: "agent:main:story",
+      controllerState: createSncWorkerControllerState({
+        controllerSessionKey: "agent:main:story",
+      }),
+      updatedAt: "2026-04-04T08:05:00.000Z",
+    });
+
+    const stateA = await loadSncWorkerState({
+      stateDir,
+      sessionId: "session-worker-a",
+      sessionKey: "agent:main:story",
+    });
+    const stateB = await loadSncWorkerState({
+      stateDir,
+      sessionId: "session-worker-b",
+      sessionKey: "agent:main:story",
+    });
+
+    expect(stateA?.agentScopeKey).toBe("agent:main:story#session-worker-a");
+    expect(stateB?.agentScopeKey).toBe("agent:main:story#session-worker-b");
+    expect(
+      readdirSync(path.join(stateDir, "workers")).filter((entry) => entry.endsWith(".json")),
+    ).toHaveLength(2);
+  });
+
+  it("resolves the latest exact worker scope from a sessionKey-only alias", async () => {
+    const root = createTempDir();
+    const stateDir = path.join(root, ".snc-state");
+
+    await persistSncWorkerState({
+      stateDir,
+      sessionId: "session-worker-alias",
+      sessionKey: "agent:main:story",
+      controllerState: createSncWorkerControllerState({
+        controllerSessionKey: "agent:main:story",
+      }),
+      updatedAt: "2026-04-04T08:10:00.000Z",
+    });
+
+    const aliased = await loadSncWorkerState({
+      stateDir,
+      sessionId: "agent:main:story",
+      sessionKey: "agent:main:story",
+    });
+
+    expect(aliased?.sessionId).toBe("session-worker-alias");
+    expect(aliased?.agentScopeKey).toBe("agent:main:story#session-worker-alias");
+  });
+
+  it("refuses ambiguous sessionKey-only loads when multiple exact scopes coexist", async () => {
+    const root = createTempDir();
+    const stateDir = path.join(root, ".snc-state");
+
+    await persistSncWorkerState({
+      stateDir,
+      sessionId: "session-worker-left",
+      sessionKey: "agent:main:story",
+      controllerState: createSncWorkerControllerState({
+        controllerSessionKey: "agent:main:story",
+      }),
+      updatedAt: "2026-04-05T08:00:00.000Z",
+    });
+    await persistSncWorkerState({
+      stateDir,
+      sessionId: "session-worker-right",
+      sessionKey: "agent:main:story",
+      controllerState: createSncWorkerControllerState({
+        controllerSessionKey: "agent:main:story",
+      }),
+      updatedAt: "2026-04-05T08:01:00.000Z",
+    });
+
+    const ambiguous = await loadSncWorkerState({
+      stateDir,
+      sessionId: "agent:main:story",
+      sessionKey: "agent:main:story",
+    });
+
+    expect(ambiguous).toBeNull();
+  });
+
+  it("does not let sessionKey-only lifecycle updates miss an older exact scope when siblings coexist", async () => {
+    const root = createTempDir();
+    const stateDir = path.join(root, ".snc-state");
+
+    const oldContract = buildSncWorkerJobContract({
+      jobId: "worker-old",
+      title: "Older exact scope worker",
+      kind: "analysis",
+      objective: "Keep the older scope alive until the lifecycle hook arrives.",
+    });
+    let oldState = prepareSncWorkerLaunch(
+      createSncWorkerControllerState({
+        controllerSessionKey: "agent:main:story",
+      }),
+      {
+        contract: oldContract,
+        workerId: "worker-old",
+        controllerSessionKey: "agent:main:story",
+        now: "2026-04-05T09:00:00.000Z",
+      },
+    ).state;
+    oldState = applySncWorkerLaunchResult(oldState, {
+      workerId: "worker-old",
+      result: {
+        status: "accepted",
+        childSessionKey: "agent:main:subagent:older-child",
+        runId: "run-older-child",
+      },
+      now: "2026-04-05T09:00:05.000Z",
+    });
+    await persistSncWorkerState({
+      stateDir,
+      sessionId: "session-worker-older",
+      sessionKey: "agent:main:story",
+      controllerState: oldState,
+      updatedAt: "2026-04-05T09:00:05.000Z",
+    });
+
+    const newContract = buildSncWorkerJobContract({
+      jobId: "worker-new",
+      title: "Newer exact scope worker",
+      kind: "analysis",
+      objective: "Simulate the newer sibling exact scope.",
+    });
+    let newState = prepareSncWorkerLaunch(
+      createSncWorkerControllerState({
+        controllerSessionKey: "agent:main:story",
+      }),
+      {
+        contract: newContract,
+        workerId: "worker-new",
+        controllerSessionKey: "agent:main:story",
+        now: "2026-04-05T09:01:00.000Z",
+      },
+    ).state;
+    newState = applySncWorkerLaunchResult(newState, {
+      workerId: "worker-new",
+      result: {
+        status: "accepted",
+        childSessionKey: "agent:main:subagent:newer-child",
+        runId: "run-newer-child",
+      },
+      now: "2026-04-05T09:01:05.000Z",
+    });
+    await persistSncWorkerState({
+      stateDir,
+      sessionId: "session-worker-newer",
+      sessionKey: "agent:main:story",
+      controllerState: newState,
+      updatedAt: "2026-04-05T09:01:05.000Z",
+    });
+
+    await applySncWorkerEndedLifecycle({
+      stateDir,
+      requesterSessionKey: "agent:main:story",
+      targetSessionKey: "agent:main:subagent:older-child",
+      runId: "run-older-child",
+      reason: "subagent-ended",
+      outcome: "timeout",
+      error: "Older scope timeout should land on the matching exact session.",
+      updatedAt: "2026-04-05T09:02:00.000Z",
+    });
+
+    const older = await loadSncWorkerState({
+      stateDir,
+      sessionId: "session-worker-older",
+      sessionKey: "agent:main:story",
+    });
+    const newer = await loadSncWorkerState({
+      stateDir,
+      sessionId: "session-worker-newer",
+      sessionKey: "agent:main:story",
+    });
+
+    expect(older?.controllerState.records.find((record) => record.workerId === "worker-old")?.status).toBe(
+      "failed",
+    );
+    expect(newer?.controllerState.records.find((record) => record.workerId === "worker-new")?.status).toBe(
+      "spawned",
+    );
+  });
+
   it("folds pushed completion events into persisted worker state and dedupes replayed events", async () => {
     const root = createTempDir();
     const stateDir = path.join(root, ".snc-state");

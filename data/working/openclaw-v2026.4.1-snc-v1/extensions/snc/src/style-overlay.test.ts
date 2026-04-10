@@ -57,6 +57,8 @@ describe("SNC style overlay", () => {
       framingMode: "writing",
       taskPosture,
       outputDiscipline,
+      agentRole: "primary",
+      allowHelperStyleOverlay: false,
       messages,
     });
 
@@ -67,6 +69,7 @@ describe("SNC style overlay", () => {
     });
     expect(section).toContain("Taboo patterns (highest priority):");
     expect(section).toContain("Anti-manual voice:");
+    expect(section).toContain("Human texture discipline:");
   });
 
   it("stays off during evidence-first turns", async () => {
@@ -94,6 +97,8 @@ describe("SNC style overlay", () => {
       framingMode: "writing",
       taskPosture,
       outputDiscipline,
+      agentRole: "primary",
+      allowHelperStyleOverlay: false,
       messages,
     });
 
@@ -190,6 +195,8 @@ describe("SNC style overlay", () => {
       framingMode: "writing",
       taskPosture,
       outputDiscipline,
+      agentRole: "primary",
+      allowHelperStyleOverlay: false,
       messages,
     });
 
@@ -283,6 +290,8 @@ describe("SNC style overlay", () => {
       framingMode: "writing",
       taskPosture,
       outputDiscipline,
+      agentRole: "primary",
+      allowHelperStyleOverlay: false,
       messages,
     });
 
@@ -368,6 +377,8 @@ describe("SNC style overlay", () => {
       framingMode: "writing",
       taskPosture,
       outputDiscipline,
+      agentRole: "primary",
+      allowHelperStyleOverlay: false,
       messages,
     });
 
@@ -459,6 +470,8 @@ describe("SNC style overlay", () => {
       framingMode: "writing",
       taskPosture,
       outputDiscipline,
+      agentRole: "primary",
+      allowHelperStyleOverlay: false,
       messages,
     });
 

@@ -55,6 +55,7 @@ type SncToolResultPersistEvent = {
 
 type SncToolResultPersistContext = {
   agentId?: string;
+  sessionId?: string;
   sessionKey?: string;
   toolName?: string;
   toolCallId?: string;
@@ -87,6 +88,7 @@ type SncSubagentEndedEvent = {
 type SncSubagentContext = {
   runId?: string;
   childSessionKey?: string;
+  requesterSessionId?: string;
   requesterSessionKey?: string;
 };
 
@@ -445,6 +447,7 @@ class SncHookRuntime {
 
     await applySncWorkerSpawnedLifecycle({
       stateDir: this.config.stateDir,
+      requesterSessionId: ctx.requesterSessionId,
       requesterSessionKey: ctx.requesterSessionKey,
       childSessionKey: event.childSessionKey,
       runId: event.runId ?? ctx.runId,
@@ -466,6 +469,7 @@ class SncHookRuntime {
         : new Date().toISOString();
     await applySncWorkerEndedLifecycle({
       stateDir: this.config.stateDir,
+      requesterSessionId: ctx.requesterSessionId,
       requesterSessionKey: ctx.requesterSessionKey,
       targetSessionKey: event.targetSessionKey,
       runId: event.runId ?? ctx.runId,
@@ -528,12 +532,13 @@ class SncHookRuntime {
     if ((toolName !== "sessions_spawn" && toolName !== "sessions_send") || !sessionKey) {
       return;
     }
+    const sessionId = normalizeOptionalString(ctx.sessionId) ?? sessionKey;
 
     try {
       if (toolName === "sessions_spawn") {
         await applySncWorkerLaunchToolResult({
           stateDir: this.config.stateDir,
-          sessionId: sessionKey,
+          sessionId,
           sessionKey,
           message: event.message,
           updatedAt: new Date().toISOString(),
@@ -541,7 +546,7 @@ class SncHookRuntime {
       } else {
         await applySncWorkerFollowUpToolResult({
           stateDir: this.config.stateDir,
-          sessionId: sessionKey,
+          sessionId,
           sessionKey,
           message: event.message,
           updatedAt: new Date().toISOString(),

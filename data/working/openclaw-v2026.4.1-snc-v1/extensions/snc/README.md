@@ -11,7 +11,7 @@ It is also designed not to fight ordinary OpenClaw assistant work. When you do n
 If you already have the release package:
 
 ```bash
-openclaw plugins install ./openclaw-snc-1.0.0.tgz
+openclaw plugins install ./openclaw-snc-1.0.1.tgz
 ```
 
 Then enable it:
@@ -101,14 +101,14 @@ If you want the minimal useful setup for real continuity, start here:
 }
 ```
 
-That is the recommended `v1.0.0` base profile:
+That is the recommended `v1.0.1` base profile:
 
 - persistent continuity and durable-memory reuse through `stateDir`
 - neutral assistant behavior by default through `specializationMode: "auto"`
 - no hook-layer policy changes unless you explicitly opt in
 
-By default, SNC isolates cross-session durable memory by agent-family when a `sessionKey` is present.
-That means two different agents can share one `stateDir` without automatically sharing the same long-horizon memory catalog.
+By default, SNC now isolates per-session continuity, compaction summaries, and worker ledgers by exact session scope, and isolates durable memory by exact agent key when a `sessionKey` is present.
+That means two different agents can share one `stateDir` without automatically sharing the same long-horizon memory catalog, helper residue, or summary lane.
 If you want to override that, set:
 
 ```json5
@@ -122,6 +122,12 @@ Then add these when you want richer project-specific writing context:
 - `packetDir`
 
 If you also want SNC to actively steer prose away from "说明书感", enable the optional writing style overlay. It is separate from memory and only activates on `writing-prose` turns.
+
+For multi-agent OpenClaw runs, SNC also defaults helpers to a bounded lane:
+
+- helper sessions keep their own summaries and compaction state
+- helper sessions do not inherit the writing style overlay unless you explicitly allow it
+- helper sessions load `briefFile` / `ledgerFile` but skip broad packet fan-out by default
 
 Built-in first-party profile ids:
 
@@ -176,6 +182,14 @@ style: {
 }
 ```
 
+The overlay is inspired by anti-AI-writing guidance, not by paragraph quotas:
+
+- object/action before judgment
+- scene before explanation
+- uneven sentence speed over polished symmetry
+- implication over tidy takeaway
+- no "one image / one feeling / one hook" checklist writing
+
 Pin a built-in profile:
 
 ```json5
@@ -218,7 +232,27 @@ External profile rule:
 - external profiles must provide `copyright_guardrails.operational_prompt_fields` and `research_only_fields`
 - SNC only projects the external fields that the profile explicitly marks as safe for live prompt use
 
-## What v1.0.0 Actually Does
+## Agent Isolation Defaults
+
+The safe default config is:
+
+```json5
+agentIsolation: {
+  enabled: true,
+  durableMemoryScope: "agent",
+  helperStyleOverlay: false,
+  helperArtifacts: "bounded"
+}
+```
+
+Use this to keep different agents from overlapping in:
+
+- continuity state
+- compaction summaries
+- helper fold-back notes
+- durable-memory projections
+
+## What v1.0.1 Actually Does
 
 - installs as a normal OpenClaw plugin
 - activates through `plugins.slots.contextEngine`
@@ -243,7 +277,7 @@ External profile rule:
 Release package:
 
 ```bash
-openclaw plugins install ./openclaw-snc-1.0.0.tgz
+openclaw plugins install ./openclaw-snc-1.0.1.tgz
 ```
 
 Local linked source inside an OpenClaw workspace:
@@ -379,7 +413,7 @@ It is trying to help OpenClaw hold narrative shape longer:
 
 ## Explicit Defers
 
-v1.0.0 does not claim:
+v1.0.1 does not claim:
 
 - host memory-slot ownership
 - public MCP export for SNC helper tools
@@ -421,7 +455,7 @@ The clean-host delivery rehearsal gate is:
 powershell -ExecutionPolicy Bypass -File scripts/validate_snc_clean_host_rehearsal.ps1
 ```
 
-The v1.0.0 gate checks:
+The v1.0.1 gate checks:
 
 - focused SNC validation
 - dispatcher validation

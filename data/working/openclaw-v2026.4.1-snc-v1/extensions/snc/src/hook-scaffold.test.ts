@@ -53,6 +53,12 @@ function createConfig(overrides: Partial<SncResolvedConfig> = {}): SncResolvedCo
       strictness: 0.82,
       maxExamples: 1,
     },
+    agentIsolation: {
+      enabled: true,
+      durableMemoryScope: "agent",
+      helperStyleOverlay: false,
+      helperArtifacts: "bounded",
+    },
     maxSectionBytes: 24_576,
     ...overrides,
     hooks,
@@ -490,6 +496,125 @@ describe("SNC hook scaffold", () => {
     expect(record?.runId).toBe("run-hook-launch-1");
   });
 
+  it("no-ops sessions_spawn hook sync when sessionKey-only context sees multiple exact scopes", async () => {
+    const root = createTempDir();
+    const stateDir = path.join(root, ".snc-state");
+
+    const firstPrepared = prepareSncWorkerLaunch(
+      createSncWorkerControllerState({
+        controllerSessionKey: "agent:main:story",
+      }),
+      {
+        contract: buildSncWorkerJobContract({
+          jobId: "hook-worker-launch-a",
+          title: "First queued helper",
+          kind: "continuity-check",
+          objective: "Remain queued in the first exact scope.",
+        }),
+        workerId: "hook-worker-launch-a",
+        controllerSessionKey: "agent:main:story",
+        now: "2026-04-04T10:12:00.000Z",
+      },
+    );
+    const secondPrepared = prepareSncWorkerLaunch(
+      createSncWorkerControllerState({
+        controllerSessionKey: "agent:main:story",
+      }),
+      {
+        contract: buildSncWorkerJobContract({
+          jobId: "hook-worker-launch-b",
+          title: "Second queued helper",
+          kind: "continuity-check",
+          objective: "Remain queued in the second exact scope.",
+        }),
+        workerId: "hook-worker-launch-b",
+        controllerSessionKey: "agent:main:story",
+        now: "2026-04-04T10:12:30.000Z",
+      },
+    );
+
+    await persistSncWorkerState({
+      stateDir,
+      sessionId: "session-hook-launch-a",
+      sessionKey: "agent:main:story",
+      controllerState: firstPrepared.state,
+      updatedAt: "2026-04-04T10:12:00.000Z",
+    });
+    await persistSncWorkerState({
+      stateDir,
+      sessionId: "session-hook-launch-b",
+      sessionKey: "agent:main:story",
+      controllerState: secondPrepared.state,
+      updatedAt: "2026-04-04T10:12:30.000Z",
+    });
+
+    const { registerHook, registered } = createRegisterHookRecorder();
+    installSncHookScaffold(
+      { registerHook },
+      createConfig({
+        stateDir,
+        hooks: {
+          enabled: true,
+          targets: ["tool_result_persist"],
+          maxRewritesPerSession: 6,
+          maxReplacementBytes: 220,
+          maxToolResultBytes: 2048,
+        },
+      }),
+    );
+
+    const hook = getRegisteredHook(registered, "tool_result_persist");
+    await hook.handler(
+      {
+        message: createToolResultMessage(
+          JSON.stringify(
+            {
+              status: "accepted",
+              childSessionKey: "agent:main:subagent:child-hook-launch-ambiguous",
+              runId: "run-hook-launch-ambiguous",
+            },
+            null,
+            2,
+          ),
+          {
+            details: {
+              status: "accepted",
+              childSessionKey: "agent:main:subagent:child-hook-launch-ambiguous",
+              runId: "run-hook-launch-ambiguous",
+            },
+            toolName: "sessions_spawn",
+            toolCallId: "call_spawn_accept_ambiguous",
+          },
+        ),
+        toolName: "sessions_spawn",
+        toolCallId: "call_spawn_accept_ambiguous",
+      },
+      {
+        sessionKey: "agent:main:story",
+        toolName: "sessions_spawn",
+        toolCallId: "call_spawn_accept_ambiguous",
+      },
+    );
+
+    const firstState = await loadSncWorkerState({
+      stateDir,
+      sessionId: "session-hook-launch-a",
+      sessionKey: "agent:main:story",
+    });
+    const secondState = await loadSncWorkerState({
+      stateDir,
+      sessionId: "session-hook-launch-b",
+      sessionKey: "agent:main:story",
+    });
+
+    expect(firstState?.controllerState.records.find((entry) => entry.workerId === "hook-worker-launch-a")?.status).toBe(
+      "queued",
+    );
+    expect(secondState?.controllerState.records.find((entry) => entry.workerId === "hook-worker-launch-b")?.status).toBe(
+      "queued",
+    );
+  });
+
   it("folds sessions_send follow-up visibility into persisted SNC worker state", async () => {
     const root = createTempDir();
     const stateDir = path.join(root, ".snc-state");
@@ -597,6 +722,145 @@ describe("SNC hook scaffold", () => {
     expect(record?.followUp?.replySnippet).toContain("callback mismatch");
     expect(record?.followUp?.deliveryStatus).toBe("pending");
     expect(record?.followUp?.deliveryMode).toBe("announce");
+  });
+
+  it("no-ops sessions_send hook sync when sessionKey-only context sees multiple exact scopes", async () => {
+    const root = createTempDir();
+    const stateDir = path.join(root, ".snc-state");
+
+    const firstSpawned = applySncWorkerLaunchResult(
+      prepareSncWorkerLaunch(
+        createSncWorkerControllerState({
+          controllerSessionKey: "agent:main:story",
+        }),
+        {
+          contract: buildSncWorkerJobContract({
+            jobId: "hook-worker-followup-a",
+            title: "First live helper",
+            kind: "analysis",
+            objective: "Stay live in the first exact scope.",
+          }),
+          workerId: "hook-worker-followup-a",
+          controllerSessionKey: "agent:main:story",
+          now: "2026-04-04T10:20:00.000Z",
+        },
+      ).state,
+      {
+        workerId: "hook-worker-followup-a",
+        result: {
+          status: "accepted",
+          childSessionKey: "agent:main:subagent:child-hook-followup-a",
+          runId: "run-hook-followup-a",
+        },
+        now: "2026-04-04T10:20:01.000Z",
+      },
+    );
+    const secondSpawned = applySncWorkerLaunchResult(
+      prepareSncWorkerLaunch(
+        createSncWorkerControllerState({
+          controllerSessionKey: "agent:main:story",
+        }),
+        {
+          contract: buildSncWorkerJobContract({
+            jobId: "hook-worker-followup-b",
+            title: "Second live helper",
+            kind: "analysis",
+            objective: "Stay live in the second exact scope.",
+          }),
+          workerId: "hook-worker-followup-b",
+          controllerSessionKey: "agent:main:story",
+          now: "2026-04-04T10:20:30.000Z",
+        },
+      ).state,
+      {
+        workerId: "hook-worker-followup-b",
+        result: {
+          status: "accepted",
+          childSessionKey: "agent:main:subagent:child-hook-followup-b",
+          runId: "run-hook-followup-b",
+        },
+        now: "2026-04-04T10:20:31.000Z",
+      },
+    );
+
+    await persistSncWorkerState({
+      stateDir,
+      sessionId: "session-hook-followup-a",
+      sessionKey: "agent:main:story",
+      controllerState: firstSpawned,
+      updatedAt: "2026-04-04T10:20:01.000Z",
+    });
+    await persistSncWorkerState({
+      stateDir,
+      sessionId: "session-hook-followup-b",
+      sessionKey: "agent:main:story",
+      controllerState: secondSpawned,
+      updatedAt: "2026-04-04T10:20:31.000Z",
+    });
+
+    const { registerHook, registered } = createRegisterHookRecorder();
+    installSncHookScaffold(
+      { registerHook },
+      createConfig({
+        stateDir,
+        hooks: {
+          enabled: true,
+          targets: ["tool_result_persist"],
+          maxRewritesPerSession: 6,
+          maxReplacementBytes: 220,
+          maxToolResultBytes: 2048,
+        },
+      }),
+    );
+
+    const hook = getRegisteredHook(registered, "tool_result_persist");
+    await hook.handler(
+      {
+        message: createToolResultMessage(
+          JSON.stringify({
+            status: "ok",
+            reply: "A follow-up reply exists, but the exact target scope is ambiguous.",
+            delivery: {
+              status: "pending",
+              mode: "announce",
+            },
+          }),
+          {
+            details: {
+              status: "ok",
+              reply: "A follow-up reply exists, but the exact target scope is ambiguous.",
+              delivery: {
+                status: "pending",
+                mode: "announce",
+              },
+            },
+            toolName: "sessions_send",
+            toolCallId: "call_send_ok_ambiguous",
+          },
+        ),
+        toolName: "sessions_send",
+        toolCallId: "call_send_ok_ambiguous",
+      },
+      {
+        sessionKey: "agent:main:story",
+        toolName: "sessions_send",
+        toolCallId: "call_send_ok_ambiguous",
+      },
+    );
+
+    const firstState = await loadSncWorkerState({
+      stateDir,
+      sessionId: "session-hook-followup-a",
+      sessionKey: "agent:main:story",
+    });
+    const secondState = await loadSncWorkerState({
+      stateDir,
+      sessionId: "session-hook-followup-b",
+      sessionKey: "agent:main:story",
+    });
+
+    expect(firstState?.controllerState.records.find((entry) => entry.workerId === "hook-worker-followup-a")?.followUp).toBeUndefined();
+    expect(secondState?.controllerState.records.find((entry) => entry.workerId === "hook-worker-followup-b")?.followUp).toBeUndefined();
   });
 
   it("records inspect-first failure state when sessions_spawn returns an ambiguous launch error", async () => {

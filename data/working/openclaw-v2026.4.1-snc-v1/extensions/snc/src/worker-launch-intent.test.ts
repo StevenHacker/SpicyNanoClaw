@@ -28,9 +28,13 @@ function createSessionState(
   overrides: Partial<SncSessionState> = {},
 ): SncSessionState {
   return {
-    version: 2,
+    version: 3,
     sessionId: "session-launch-1",
     sessionKey: "agent:main:story",
+    agentScopeKey: "agent:main:story#session-launch-1",
+    agentKey: "agent:main:story",
+    agentFamilyKey: "agent:main",
+    agentRole: "primary",
     updatedAt: "2026-04-04T10:00:00.000Z",
     turnCount: 3,
     recentMessages: [],

@@ -37,6 +37,12 @@ function createConfig(overrides: Partial<SncResolvedConfig> = {}): SncResolvedCo
       strictness: 0.82,
       maxExamples: 1,
     },
+    agentIsolation: {
+      enabled: true,
+      durableMemoryScope: "agent",
+      helperStyleOverlay: false,
+      helperArtifacts: "bounded",
+    },
     maxSectionBytes: 24_576,
     hooks: {
       enabled: false,

@@ -15,7 +15,7 @@ Host baseline:
 If you downloaded or cloned this repo, the shortest try-today install is:
 
 ```bash
-openclaw plugins install ./data/releases/snc/openclaw-snc-1.0.0.tgz
+openclaw plugins install ./data/releases/snc/openclaw-snc-1.0.1.tgz
 ```
 
 Then enable SNC:
@@ -52,7 +52,8 @@ So the practical flow is:
 4. put SNC options under `plugins.entries.snc.config`
 5. restart the OpenClaw gateway or app process after config changes
 
-By default, SNC also isolates cross-session durable memory by agent-family when a `sessionKey` is present, so different agents do not automatically share one long-horizon memory pool just because they point at the same `stateDir`.
+By default, SNC now isolates per-session continuity, compaction summaries, and worker ledgers by exact session scope, and isolates durable memory by exact agent key when a `sessionKey` is present.
+That means sibling agents can share one `stateDir` without automatically sharing summaries, helper residue, or long-horizon memory just because they belong to the same OpenClaw family.
 If you want to force a custom shared or custom-scoped pool, set:
 
 ```json5
@@ -82,6 +83,12 @@ Once the basic install works, add your writing artifacts:
 - `packetDir`
 
 If you also want SNC to steer prose quality instead of only continuity, enable the optional writing-only style overlay. It stays out of durable memory and only activates on `writing-prose` turns.
+
+If you are running multi-agent workflows, SNC now also defaults helpers to a bounded lane:
+
+- helper sessions keep their own summaries and compaction state
+- helper sessions do not inherit the writing style overlay unless you explicitly allow it
+- helper sessions load `briefFile` / `ledgerFile` but skip broad packet fan-out by default
 
 Built-in first-party profile ids:
 
@@ -150,6 +157,14 @@ style: {
 }
 ```
 
+The overlay is intentionally inspired by anti-AI-writing guidance, not by quota-writing:
+
+- object/action before judgment
+- scene before explanation
+- uneven sentence speed over polished symmetry
+- implication over tidy takeaway
+- no paragraph KPI like "one image and one feeling every time"
+
 Pin a built-in archetype:
 
 ```json5
@@ -191,6 +206,28 @@ External profile rule:
 - SNC only accepts profiles with `safety_mode: "desensitized"`
 - external profiles must provide `copyright_guardrails.operational_prompt_fields` and `research_only_fields`
 - SNC only projects external fields that the profile explicitly marks as safe for live prompt use
+
+## Agent Isolation Defaults
+
+The new safe defaults are:
+
+```json5
+agentIsolation: {
+  enabled: true,
+  durableMemoryScope: "agent",
+  helperStyleOverlay: false,
+  helperArtifacts: "bounded"
+}
+```
+
+Use this to keep different agents from stepping on each other's:
+
+- continuity state
+- compaction summaries
+- helper fold-back notes
+- durable-memory projections
+
+Only loosen these defaults if you truly want broader sharing.
 
 ## Full-Feature OpenClaw Config
 
@@ -306,7 +343,7 @@ plugins.slots.contextEngine = null
 
 or point it back to your previous context engine, then restart OpenClaw.
 
-## What v1.0.0 Gives You
+## What v1.0.1 Gives You
 
 - continuity-oriented context assembly that can stay neutral for normal development and daily assistant work
 - evidence-first posture when the user explicitly asks to read, inspect, compare, quote, or list from current materials
@@ -343,7 +380,7 @@ If and when the package is published to a registry, the target one-liner is:
 openclaw plugins install openclaw-snc
 ```
 
-## What v1.0.0 Does Not Pretend To Be
+## What v1.0.1 Does Not Pretend To Be
 
 - not a host memory-slot takeover
 - not a public MCP surface for SNC helper tools yet
@@ -396,7 +433,7 @@ That rehearsal verifies:
 - recommended base config write + schema validation
 - `plugins inspect` / `plugins list` confirmation for the installed SNC package
 
-The v1.0.0 gate checks:
+The v1.0.1 gate checks:
 
 - focused SNC validation
 - dispatcher validation plus workspace typecheck
@@ -415,7 +452,7 @@ openclaw plugins doctor
 
 If you are here as an OpenClaw user, these are the two useful paths:
 
-- installable package: [`data/releases/snc/openclaw-snc-1.0.0.tgz`](./data/releases/snc/openclaw-snc-1.0.0.tgz)
+- installable package: [`data/releases/snc/openclaw-snc-1.0.1.tgz`](./data/releases/snc/openclaw-snc-1.0.1.tgz)
 - plugin source: [`data/working/openclaw-v2026.4.1-snc-v1/extensions/snc`](./data/working/openclaw-v2026.4.1-snc-v1/extensions/snc)
 
 ## Post-v1 TODO
@@ -426,30 +463,3 @@ The next bounded wave is:
 2. a separate code-context plane for coding-task grounding
 3. an operator-truth inspect surface for projected, suppressed, held-back, and omitted context
 4. style overlay v2 and writing/inspiration workflow work above the truth planes
-
-## Local MCP Production Ops
-
-The local Codex gateway also exposes production-host helpers for the live OpenClaw box.
-
-Required env vars:
-
-- `OPENCLAW_PROD_SSH_HOST`
-- `OPENCLAW_PROD_SSH_USER`
-- `OPENCLAW_PROD_SSH_PASSWORD`
-- `OPENCLAW_PROD_RUNTIME_ROOT`
-- `OPENCLAW_PROD_REPO_ROOT`
-- `OPENCLAW_PROD_RUN_AS`
-
-Useful tools:
-
-- `openclaw_prod_status()`
-  - checks production host, current branch, current commit, active `contextEngine`, gateway status, and the default runtime / repo roots
-- `openclaw_prod_layout()`
-  - returns a curated decomposition of the production OpenClaw runtime root versus the production repo root
-  - useful when you need to quickly answer "this path is runtime state, workspace, story asset, recovery log, or source repo?"
-- `openclaw_prod_tree(path?, max_depth?, include_files?)`
-  - returns a directory tree for production paths
-  - `path` supports `runtime`, `repo`, `runtime/<subpath>`, `repo/<subpath>`, or an absolute path
-- `openclaw_prod_exec(command, workdir?, timeout_seconds?, run_as?)`
-  - runs a shell command on the production host
-  - default working directory is the OpenClaw repo root, so you do not need to manually `cd` first

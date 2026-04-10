@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import type { SncResolvedConfig } from "./config.js";
+import type { SncAgentRole } from "./agent-scope.js";
 import type { SncOutputDisciplineContext, SncTaskPostureContext } from "./task-posture.js";
 
 type SncStyleAxes = {
@@ -628,6 +629,8 @@ export async function resolveSncStyleOverlay(params: {
   framingMode: "writing" | "general";
   taskPosture: SncTaskPostureContext;
   outputDiscipline: SncOutputDisciplineContext;
+  agentRole: SncAgentRole;
+  allowHelperStyleOverlay: boolean;
   messages: AgentMessage[];
 }): Promise<SncResolvedStyleOverlay | undefined> {
   if (
@@ -635,7 +638,8 @@ export async function resolveSncStyleOverlay(params: {
     params.config.mode === "off" ||
     params.framingMode !== "writing" ||
     params.taskPosture.posture === "evidence-grounding" ||
-    params.outputDiscipline.mode !== "writing-prose"
+    params.outputDiscipline.mode !== "writing-prose" ||
+    (params.agentRole === "helper" && !params.allowHelperStyleOverlay)
   ) {
     return undefined;
   }
@@ -712,6 +716,17 @@ function buildStrictnessCue(strictness: number): string {
   return "Treat taboo patterns as caution flags.";
 }
 
+function buildHumanTextureGuidance(): string[] {
+  return [
+    "- Lead with scene, objects, and motion before explanation or verdict.",
+    "- Let action carry emotion; do not rush to summarize what the reader should feel.",
+    "- Keep sentence speed uneven enough to feel lived-in, not workshop-perfect.",
+    "- Allow rough edges, interruption, and implication if they preserve presence.",
+    "- Do not turn editing heuristics into quotas or paragraph checklists.",
+    "- Avoid approval warmups, polished takeaways, and 'not X but Y' clever pivots unless the scene truly earns them.",
+  ];
+}
+
 export function buildSncStyleOverlaySection(params: {
   overlay: SncResolvedStyleOverlay;
   config: SncResolvedConfig["style"];
@@ -747,6 +762,9 @@ export function buildSncStyleOverlaySection(params: {
     lines.push(...buildAxisSummary(overlay.profile));
   }
 
+  lines.push("", "Human texture discipline:");
+  lines.push(...buildHumanTextureGuidance());
+
   if (allowed.has("narrative_moves")) {
     lines.push("", "Narrative moves:");
     lines.push(...clampList(overlay.profile.narrativeMoves.openings, 2).map((entry) => `- Opening: ${entry}`));
@@ -764,6 +782,7 @@ export function buildSncStyleOverlaySection(params: {
   lines.push(
     "- Prefer scene, motion, interruption, implication, and bodily/emotional staging over abstract conclusion sentences.",
   );
+  lines.push("- Do not satisfy the overlay by mechanically placing one image, one feeling, or one hook per paragraph.");
   if (allowed.has("prompt_fragments")) {
     lines.push(...overlay.profile.promptFragments.avoid.map((entry) => `- Avoid: ${entry}`));
     lines.push(...overlay.profile.promptFragments.steeringNotes.map((entry) => `- Steer: ${entry}`));

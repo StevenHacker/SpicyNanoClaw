@@ -37,6 +37,8 @@ export type SncPluginHookConfig = {
 
 export type SncSpecializationMode = "auto" | "writing" | "general";
 export type SncStyleOverlayMode = "off" | "auto" | "profile";
+export type SncAgentIsolationDurableMemoryScope = "agent" | "family" | "shared";
+export type SncAgentIsolationHelperArtifactsMode = "full" | "bounded";
 
 export type SncPluginDurableMemoryConfig = {
   maxCatalogEntries?: number;
@@ -55,6 +57,13 @@ export type SncPluginStyleConfig = {
   maxExamples?: number;
 };
 
+export type SncPluginAgentIsolationConfig = {
+  enabled?: boolean;
+  durableMemoryScope?: SncAgentIsolationDurableMemoryScope;
+  helperStyleOverlay?: boolean;
+  helperArtifacts?: SncAgentIsolationHelperArtifactsMode;
+};
+
 export type SncPluginConfig = {
   briefFile?: string;
   ledgerFile?: string;
@@ -64,6 +73,7 @@ export type SncPluginConfig = {
   memoryNamespace?: string;
   specializationMode?: SncSpecializationMode;
   durableMemory?: SncPluginDurableMemoryConfig;
+  agentIsolation?: SncPluginAgentIsolationConfig;
   style?: SncPluginStyleConfig;
   maxSectionBytes?: number;
   hooks?: SncPluginHookConfig;
@@ -90,6 +100,12 @@ export type SncResolvedConfig = {
     staleEntryDays: number;
     projectionLimit: number;
     projectionMinimumScore: number;
+  };
+  agentIsolation: {
+    enabled: boolean;
+    durableMemoryScope: SncAgentIsolationDurableMemoryScope;
+    helperStyleOverlay: boolean;
+    helperArtifacts: SncAgentIsolationHelperArtifactsMode;
   };
   style: {
     enabled: boolean;
@@ -183,6 +199,48 @@ function resolveSpecializationMode(value: unknown): SncSpecializationMode {
 
 function resolveStyleOverlayMode(value: unknown): SncStyleOverlayMode {
   return value === "off" || value === "profile" ? value : "auto";
+}
+
+function resolveAgentIsolationDurableMemoryScope(
+  value: unknown,
+): SncAgentIsolationDurableMemoryScope {
+  return value === "family" || value === "shared" ? value : "agent";
+}
+
+function resolveAgentIsolationHelperArtifactsMode(
+  value: unknown,
+): SncAgentIsolationHelperArtifactsMode {
+  return value === "full" ? value : "bounded";
+}
+
+function resolveAgentIsolationConfig(
+  value: unknown,
+): SncResolvedConfig["agentIsolation"] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {
+      enabled: true,
+      durableMemoryScope: "agent",
+      helperStyleOverlay: false,
+      helperArtifacts: "bounded",
+    };
+  }
+
+  const isolation = value as {
+    enabled?: unknown;
+    durableMemoryScope?: unknown;
+    helperStyleOverlay?: unknown;
+    helperArtifacts?: unknown;
+  };
+  return {
+    enabled: isolation.enabled !== false,
+    durableMemoryScope: resolveAgentIsolationDurableMemoryScope(
+      isolation.durableMemoryScope,
+    ),
+    helperStyleOverlay: isolation.helperStyleOverlay === true,
+    helperArtifacts: resolveAgentIsolationHelperArtifactsMode(
+      isolation.helperArtifacts,
+    ),
+  };
 }
 
 function resolveHookConfig(value: unknown): SncResolvedHookConfig {
@@ -331,6 +389,7 @@ export function resolveSncPluginConfig(
     memoryNamespace: normalizeString(raw.memoryNamespace),
     specializationMode: resolveSpecializationMode(raw.specializationMode),
     durableMemory: resolveDurableMemoryConfig(raw.durableMemory),
+    agentIsolation: resolveAgentIsolationConfig(raw.agentIsolation),
     style: resolveStyleConfig(raw.style, resolvePath),
     maxSectionBytes:
       typeof maxSectionBytesRaw === "number" && Number.isFinite(maxSectionBytesRaw)
